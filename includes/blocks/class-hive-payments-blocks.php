@@ -5,7 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! class_exists( 'Automattic\\WooCommerce\\Blocks\\Payments\\Integrations\\AbstractPaymentMethodType' ) ) {
-\treturn;
+	return;
 }
 
 class Hive_Payments_Blocks extends \Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType {
@@ -50,7 +50,7 @@ class Hive_Payments_Blocks extends \Automattic\WooCommerce\Blocks\Payments\Integ
 		);
 	}
 
-	private function get_setting( $key, $default = '' ) {
+	protected function get_setting( $key, $default = '' ) {
 		if ( isset( $this->settings[ $key ] ) ) {
 			return $this->settings[ $key ];
 		}

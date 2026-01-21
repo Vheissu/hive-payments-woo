@@ -12,7 +12,7 @@ class Hive_Payments_RPC {
 	}
 
 	public function get_account_history( $account, $start, $limit ) {
-		return $this->call(
+		$result = $this->call(
 			'account_history_api.get_account_history',
 			array(
 				'account' => $account,
@@ -20,6 +20,30 @@ class Hive_Payments_RPC {
 				'limit'   => (int) $limit,
 			)
 		);
+
+		if ( is_wp_error( $result ) ) {
+			$fallback = $this->call(
+				'condenser_api.get_account_history',
+				array( $account, (int) $start, (int) $limit )
+			);
+			return $fallback;
+		}
+
+		if ( is_array( $result ) && isset( $result['history'] ) && is_array( $result['history'] ) ) {
+			$result = $result['history'];
+		}
+
+		if ( empty( $result ) ) {
+			$fallback = $this->call(
+				'condenser_api.get_account_history',
+				array( $account, (int) $start, (int) $limit )
+			);
+			if ( ! is_wp_error( $fallback ) ) {
+				return $fallback;
+			}
+		}
+
+		return $result;
 	}
 
 	public function get_dynamic_global_properties() {

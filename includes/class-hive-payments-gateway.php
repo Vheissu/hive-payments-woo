@@ -21,6 +21,10 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 		add_action( 'woocommerce_update_options_payment_gateways_' . $this->id, array( $this, 'process_admin_options' ) );
 		add_action( 'woocommerce_thankyou_' . $this->id, array( $this, 'thankyou_page' ) );
 		add_action( 'woocommerce_email_before_order_table', array( $this, 'email_instructions' ), 10, 3 );
+		add_action( 'woocommerce_order_details_after_order_table', array( $this, 'order_details_instructions' ) );
+		add_action( 'woocommerce_admin_order_data_after_order_details', array( $this, 'admin_order_details' ) );
+		add_filter( 'woocommerce_order_actions', array( $this, 'add_order_action' ), 10, 2 );
+		add_action( 'woocommerce_order_action_hive_payments_check', array( $this, 'handle_order_action_check' ) );
 	}
 
 	public function init_form_fields() {
@@ -256,7 +260,10 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 			return;
 		}
 
+		$this->enqueue_thankyou_assets( $order );
+
 		echo $this->get_instructions_html( $order );
+		echo $this->get_status_html( $order );
 	}
 
 	public function email_instructions( $order, $sent_to_admin, $plain_text ) {
@@ -270,6 +277,79 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 				: $this->get_instructions_html( $order );
 		}
 	}
+
+	public function order_details_instructions( $order ) {
+		if ( ! $order instanceof WC_Order ) {
+			return;
+		}
+		if ( $order->get_payment_method() !== $this->id ) {
+			return;
+		}
+		if ( function_exists( 'is_order_received_page' ) && is_order_received_page() ) {
+			return;
+		}
+
+		echo $this->get_instructions_html( $order );
+		echo $this->get_status_html( $order );
+	}
+
+	public function admin_order_details( $order ) {
+		if ( ! $order instanceof WC_Order ) {
+			return;
+		}
+		if ( $order->get_payment_method() !== $this->id ) {
+			return;
+		}
+
+		$data = $this->get_payment_details( $order );
+		if ( empty( $data['amount'] ) || empty( $data['asset'] ) || empty( $data['memo'] ) ) {
+			return;
+		}
+
+		echo '<div class="order_data_column">';
+		echo '<h4>' . esc_html__( 'Hive payment', 'hive-payments-woo' ) . '</h4>';
+		echo '<p><strong>' . esc_html__( 'Amount:', 'hive-payments-woo' ) . '</strong> ' . esc_html( $data['amount'] . ' ' . $data['asset'] ) . '</p>';
+		echo '<p><strong>' . esc_html__( 'To account:', 'hive-payments-woo' ) . '</strong> @' . esc_html( $data['account'] ) . '</p>';
+		echo '<p><strong>' . esc_html__( 'Memo:', 'hive-payments-woo' ) . '</strong> ' . esc_html( $data['memo'] ) . '</p>';
+		if ( ! empty( $data['txid'] ) ) {
+			echo '<p><strong>' . esc_html__( 'Transaction ID:', 'hive-payments-woo' ) . '</strong> ' . esc_html( $data['txid'] ) . '</p>';
+		}
+		if ( ! empty( $data['paid_amount'] ) ) {
+			echo '<p><strong>' . esc_html__( 'Paid amount:', 'hive-payments-woo' ) . '</strong> ' . esc_html( $data['paid_amount'] . ' ' . $data['asset'] ) . '</p>';
+		}
+		echo '<p>' . esc_html__( 'Use “Order actions → Check Hive payment” to re-check the blockchain.', 'hive-payments-woo' ) . '</p>';
+		echo '</div>';
+	}
+
+	public function add_order_action( $actions, $order = null ) {
+		if ( $order instanceof WC_Order && $order->get_payment_method() === $this->id ) {
+			$actions['hive_payments_check'] = __( 'Check Hive payment', 'hive-payments-woo' );
+		}
+		return $actions;
+	}
+
+	public function handle_order_action_check( $order ) {
+		if ( ! $order instanceof WC_Order ) {
+			return;
+		}
+		if ( $order->get_payment_method() !== $this->id ) {
+			return;
+		}
+
+		$result = Hive_Payments_Poller::check_order_payment( $order );
+		if ( is_wp_error( $result ) ) {
+			$order->add_order_note( 'Hive payment check failed: ' . $result->get_error_message() );
+			return;
+		}
+
+		if ( isset( $result['status'] ) && 'paid' === $result['status'] ) {
+			$order->add_order_note( __( 'Hive payment check: payment confirmed.', 'hive-payments-woo' ) );
+			return;
+		}
+
+		$order->add_order_note( __( 'Hive payment check: no matching transfer found yet.', 'hive-payments-woo' ) );
+	}
+
 
 	private function get_supported_assets() {
 		$assets = (array) $this->get_option( 'accepted_assets', array( 'HIVE', 'HBD' ) );
@@ -351,7 +431,7 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 
 		if ( 'live' === $source ) {
 			$store_currency = strtolower( get_woocommerce_currency() );
-			$settings       = $this->get_settings();
+			$settings       = is_array( $this->settings ) ? $this->settings : (array) get_option( 'woocommerce_hive_payments_settings', array() );
 			$live_rate      = Hive_Payments_Rates::get_rate( $asset, $store_currency, $settings );
 			if ( is_wp_error( $live_rate ) ) {
 				$this->log( 'CoinGecko rate error: ' . $live_rate->get_error_message() );
@@ -390,39 +470,88 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 		$logger->info( $message, array( 'source' => 'hive-payments' ) );
 	}
 
-	private function get_instructions_html( WC_Order $order ) {
+	private function get_payment_details( WC_Order $order ) {
 		$account = sanitize_text_field( $this->get_option( 'hive_account' ) );
 		$account = ltrim( $account, '@' );
-		$asset   = $order->get_meta( '_hive_asset' );
-		$amount  = $order->get_meta( '_hive_amount' );
-		$memo    = $order->get_meta( '_hive_memo' );
 
-		if ( empty( $account ) || empty( $memo ) || empty( $amount ) || empty( $asset ) ) {
+		return array(
+			'account'     => $account,
+			'asset'       => (string) $order->get_meta( '_hive_asset' ),
+			'amount'      => (string) $order->get_meta( '_hive_amount' ),
+			'memo'        => (string) $order->get_meta( '_hive_memo' ),
+			'paid_amount' => (string) $order->get_meta( '_hive_paid_amount' ),
+			'txid'        => (string) $order->get_meta( '_hive_txid' ),
+		);
+	}
+
+	private function get_status_html( WC_Order $order ) {
+		$status = $order->get_status();
+		$message = '';
+
+		if ( in_array( $status, array( 'on-hold', 'pending' ), true ) ) {
+			$message = __( 'We are monitoring the Hive blockchain for your payment. You can keep this page open or close it and return later; we will update the order once the transfer is confirmed.', 'hive-payments-woo' );
+		} elseif ( in_array( $status, array( 'processing', 'completed' ), true ) ) {
+			$message = __( 'Payment confirmed on the Hive blockchain. Thank you!', 'hive-payments-woo' );
+		}
+
+		if ( '' === $message ) {
 			return '';
 		}
 
-		$amount_display = esc_html( $amount . ' ' . $asset );
-		$memo_display   = esc_html( $memo );
+		return '<div class="woocommerce-hive-status" data-hive-order-status="1"><p>' . esc_html( $message ) . '</p></div>';
+	}
+
+	private function enqueue_thankyou_assets( WC_Order $order ) {
+		if ( ! $order->has_status( array( 'on-hold', 'pending' ) ) ) {
+			return;
+		}
+
+		$script_handle = 'hive-payments-order-status';
+		$script_url    = HIVE_PAYMENTS_PLUGIN_URL . 'assets/frontend/order-status.js';
+
+		wp_register_script( $script_handle, $script_url, array(), HIVE_PAYMENTS_VERSION, true );
+		wp_enqueue_script( $script_handle );
+
+		$order_id  = $order->get_id();
+		$order_key = $order->get_order_key();
+		wp_localize_script(
+			$script_handle,
+			'hivePaymentsOrderCheck',
+			array(
+				'ajaxUrl'     => admin_url( 'admin-ajax.php' ),
+				'orderId'     => $order_id,
+				'orderKey'    => $order_key,
+				'nonce'       => wp_create_nonce( 'hive_payments_check_' . $order_id . '_' . $order_key ),
+				'intervalMs'  => 15000,
+				'maxAttempts' => 20,
+				'paidMessage' => __( 'Payment confirmed on the Hive blockchain. This page will refresh shortly.', 'hive-payments-woo' ),
+			)
+		);
+	}
+
+	private function get_instructions_html( WC_Order $order ) {
+		$data = $this->get_payment_details( $order );
+		if ( empty( $data['account'] ) || empty( $data['memo'] ) || empty( $data['amount'] ) || empty( $data['asset'] ) ) {
+			return '';
+		}
+
+		$amount_display = esc_html( $data['amount'] . ' ' . $data['asset'] );
+		$memo_display   = esc_html( $data['memo'] );
 
 		return '<section class="woocommerce-hive-instructions">'
 			. '<h2>' . esc_html__( 'Hive payment instructions', 'hive-payments-woo' ) . '</h2>'
 			. '<p>' . esc_html__( 'Send the exact amount with the memo below to complete your order.', 'hive-payments-woo' ) . '</p>'
 			. '<ul>'
 			. '<li><strong>' . esc_html__( 'Amount:', 'hive-payments-woo' ) . '</strong> ' . $amount_display . '</li>'
-			. '<li><strong>' . esc_html__( 'To account:', 'hive-payments-woo' ) . '</strong> @' . esc_html( $account ) . '</li>'
+			. '<li><strong>' . esc_html__( 'To account:', 'hive-payments-woo' ) . '</strong> @' . esc_html( $data['account'] ) . '</li>'
 			. '<li><strong>' . esc_html__( 'Memo:', 'hive-payments-woo' ) . '</strong> ' . $memo_display . '</li>'
 			. '</ul>'
 			. '</section>';
 	}
 
 	private function get_instructions_text( WC_Order $order ) {
-		$account = sanitize_text_field( $this->get_option( 'hive_account' ) );
-		$account = ltrim( $account, '@' );
-		$asset   = $order->get_meta( '_hive_asset' );
-		$amount  = $order->get_meta( '_hive_amount' );
-		$memo    = $order->get_meta( '_hive_memo' );
-
-		if ( empty( $account ) || empty( $memo ) || empty( $amount ) || empty( $asset ) ) {
+		$data = $this->get_payment_details( $order );
+		if ( empty( $data['account'] ) || empty( $data['memo'] ) || empty( $data['amount'] ) || empty( $data['asset'] ) ) {
 			return '';
 		}
 
@@ -430,11 +559,11 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 			"%s\n%s %s\n%s @%s\n%s %s\n",
 			__( 'Hive payment instructions:', 'hive-payments-woo' ),
 			__( 'Amount:', 'hive-payments-woo' ),
-			$amount . ' ' . $asset,
+			$data['amount'] . ' ' . $data['asset'],
 			__( 'To account:', 'hive-payments-woo' ),
-			$account,
+			$data['account'],
 			__( 'Memo:', 'hive-payments-woo' ),
-			$memo
+			$data['memo']
 		);
 	}
 }

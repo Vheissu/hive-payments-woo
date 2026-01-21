@@ -7,7 +7,7 @@
  * Text Domain: hive-payments-woo
  * Domain Path: /languages
  * Requires at least: 6.0
- * Requires PHP: 8.5
+ * Requires PHP: 8.4
  * WC requires at least: 10.4
  * WC tested up to: 10.4.3
  */
@@ -21,7 +21,6 @@ define( 'HIVE_PAYMENTS_PLUGIN_FILE', __FILE__ );
 define( 'HIVE_PAYMENTS_PLUGIN_PATH', __DIR__ );
 define( 'HIVE_PAYMENTS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
-require_once __DIR__ . '/includes/class-hive-payments-gateway.php';
 require_once __DIR__ . '/includes/class-hive-payments-rpc.php';
 require_once __DIR__ . '/includes/class-hive-payments-rates.php';
 require_once __DIR__ . '/includes/class-hive-payments-poller.php';
@@ -47,6 +46,18 @@ add_action( 'plugins_loaded', function () {
 		return;
 	}
 
+	if ( class_exists( 'WC_Payment_Gateway' ) ) {
+		require_once __DIR__ . '/includes/class-hive-payments-gateway.php';
+	} else {
+		add_action( 'admin_notices', function () {
+			if ( ! current_user_can( 'activate_plugins' ) ) {
+				return;
+			}
+			echo '<div class="notice notice-error"><p>' . esc_html__( 'Hive Payments for WooCommerce could not load the payment gateway class. Please ensure WooCommerce is fully loaded.', 'hive-payments-woo' ) . '</p></div>';
+		} );
+		return;
+	}
+
 	add_filter( 'woocommerce_payment_gateways', function ( $gateways ) {
 		$gateways[] = 'Hive_Payments_Gateway';
 		return $gateways;
@@ -57,6 +68,48 @@ add_action( 'plugins_loaded', function () {
 		Hive_Payments_Blocks::init();
 	}
 } );
+
+add_action( 'wp_ajax_hive_payments_check_order', 'hive_payments_ajax_check_order' );
+add_action( 'wp_ajax_nopriv_hive_payments_check_order', 'hive_payments_ajax_check_order' );
+
+function hive_payments_ajax_check_order() {
+	if ( ! class_exists( 'WooCommerce' ) ) {
+		wp_send_json_error( array( 'message' => 'WooCommerce is not active.' ), 400 );
+	}
+
+	$order_id  = isset( $_POST['order_id'] ) ? absint( wp_unslash( $_POST['order_id'] ) ) : 0;
+	$order_key = isset( $_POST['order_key'] ) ? sanitize_text_field( wp_unslash( $_POST['order_key'] ) ) : '';
+	$nonce     = isset( $_POST['nonce'] ) ? sanitize_text_field( wp_unslash( $_POST['nonce'] ) ) : '';
+
+	if ( ! $order_id || '' === $order_key ) {
+		wp_send_json_error( array( 'message' => 'Missing order data.' ), 400 );
+	}
+
+	if ( ! wp_verify_nonce( $nonce, 'hive_payments_check_' . $order_id . '_' . $order_key ) ) {
+		wp_send_json_error( array( 'message' => 'Invalid nonce.' ), 403 );
+	}
+
+	$order = wc_get_order( $order_id );
+	if ( ! $order || $order->get_order_key() !== $order_key ) {
+		wp_send_json_error( array( 'message' => 'Invalid order.' ), 404 );
+	}
+	if ( 'hive_payments' !== $order->get_payment_method() ) {
+		wp_send_json_error( array( 'message' => 'Invalid payment method.' ), 400 );
+	}
+
+	$result = Hive_Payments_Poller::check_order_payment( $order );
+	if ( is_wp_error( $result ) ) {
+		wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+	}
+
+	$order = wc_get_order( $order_id );
+	wp_send_json_success(
+		array(
+			'status' => $order ? $order->get_status() : '',
+			'result' => $result,
+		)
+	);
+}
 
 register_activation_hook( __FILE__, array( 'Hive_Payments_Poller', 'activate' ) );
 register_deactivation_hook( __FILE__, array( 'Hive_Payments_Poller', 'deactivate' ) );
