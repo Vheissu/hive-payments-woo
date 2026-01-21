@@ -23,8 +23,6 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 		add_action( 'woocommerce_email_before_order_table', array( $this, 'email_instructions' ), 10, 3 );
 		add_action( 'woocommerce_order_details_after_order_table', array( $this, 'order_details_instructions' ) );
 		add_action( 'woocommerce_admin_order_data_after_order_details', array( $this, 'admin_order_details' ) );
-		add_filter( 'woocommerce_order_actions', array( $this, 'add_order_action' ), 10, 2 );
-		add_action( 'woocommerce_order_action_hive_payments_check', array( $this, 'handle_order_action_check' ) );
 	}
 
 	public function init_form_fields() {

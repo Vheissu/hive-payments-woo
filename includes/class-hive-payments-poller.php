@@ -174,6 +174,32 @@ class Hive_Payments_Poller {
 		}
 
 		update_option( self::OPTION_LAST_SEEN, time(), false );
+
+		$this->recheck_recent_orders();
+	}
+
+	private function recheck_recent_orders() {
+		$orders = wc_get_orders(
+			array(
+				'limit'          => 5,
+				'payment_method' => 'hive_payments',
+				'status'         => array( 'on-hold', 'pending' ),
+				'orderby'        => 'date',
+				'order'          => 'DESC',
+				'meta_key'       => '_hive_memo',
+			)
+		);
+
+		if ( empty( $orders ) ) {
+			return;
+		}
+
+		foreach ( $orders as $order ) {
+			$result = self::check_order_payment( $order );
+			if ( is_wp_error( $result ) ) {
+				$this->log( 'Hive manual recheck error: ' . $result->get_error_message() . ' ' . wp_json_encode( $result->get_error_data() ) );
+			}
+		}
 	}
 
 	private function match_orders( $memo, $amount, $asset, $trx_id ) {

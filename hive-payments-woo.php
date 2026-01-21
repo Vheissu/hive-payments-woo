@@ -71,6 +71,8 @@ add_action( 'plugins_loaded', function () {
 
 add_action( 'wp_ajax_hive_payments_check_order', 'hive_payments_ajax_check_order' );
 add_action( 'wp_ajax_nopriv_hive_payments_check_order', 'hive_payments_ajax_check_order' );
+add_filter( 'woocommerce_order_actions', 'hive_payments_add_order_action', 10, 2 );
+add_action( 'woocommerce_order_action_hive_payments_check', 'hive_payments_handle_order_action_check' );
 
 function hive_payments_ajax_check_order() {
 	if ( ! class_exists( 'WooCommerce' ) ) {
@@ -109,6 +111,35 @@ function hive_payments_ajax_check_order() {
 			'result' => $result,
 		)
 	);
+}
+
+function hive_payments_add_order_action( $actions, $order = null ) {
+	if ( $order instanceof WC_Order && 'hive_payments' === $order->get_payment_method() ) {
+		$actions['hive_payments_check'] = __( 'Check Hive payment', 'hive-payments-woo' );
+	}
+	return $actions;
+}
+
+function hive_payments_handle_order_action_check( $order ) {
+	if ( ! $order instanceof WC_Order ) {
+		return;
+	}
+	if ( 'hive_payments' !== $order->get_payment_method() ) {
+		return;
+	}
+
+	$result = Hive_Payments_Poller::check_order_payment( $order );
+	if ( is_wp_error( $result ) ) {
+		$order->add_order_note( 'Hive payment check failed: ' . $result->get_error_message() );
+		return;
+	}
+
+	if ( isset( $result['status'] ) && 'paid' === $result['status'] ) {
+		$order->add_order_note( __( 'Hive payment check: payment confirmed.', 'hive-payments-woo' ) );
+		return;
+	}
+
+	$order->add_order_note( __( 'Hive payment check: no matching transfer found yet.', 'hive-payments-woo' ) );
 }
 
 register_activation_hook( __FILE__, array( 'Hive_Payments_Poller', 'activate' ) );
