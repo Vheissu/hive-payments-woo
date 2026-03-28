@@ -31,11 +31,14 @@ class Hive_Payments_Blocks extends \Automattic\WooCommerce\Blocks\Payments\Integ
 	}
 
 	public function get_payment_method_data() {
+		$assets = Hive_Payments_Assets::get_supported_assets( $this->settings );
+
 		return array(
-			'title'       => $this->get_setting( 'title' ),
-			'description' => $this->get_setting( 'description' ),
-			'assets'      => $this->get_setting( 'accepted_assets', array( 'HIVE', 'HBD' ) ),
-			'defaultAsset' => $this->get_setting( 'default_asset', 'HIVE' ),
+			'title'                => $this->get_setting( 'title' ),
+			'description'          => $this->get_setting( 'description' ),
+			'assets'               => $assets,
+			'defaultAsset'         => Hive_Payments_Assets::get_default_asset( $this->settings ),
+			'paymentWindowMinutes' => Hive_Payments_Request::get_payment_window_minutes( $this->settings ),
 		);
 	}
 

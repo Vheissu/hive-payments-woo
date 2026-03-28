@@ -1,12 +1,16 @@
 # Hive Payments for WooCommerce
 
-Accept HIVE or HBD payments using the Hive blockchain. Payments are verified by polling the blockchain for a transfer that matches a **strict memo** generated per order.
+Accept HIVE, HBD, or custom Hive Engine token payments using Hive. Payments are verified by polling for an exact matching payment memo generated per order.
 
 ## Features
 - HIVE and HBD support
+- Custom Hive Engine token support
 - Strict memo matching (unique long token per order)
-- Live pricing via CoinGecko (default), with optional API key
+- Live pricing via CoinGecko for native assets and Hive Engine market data for tokens
 - Manual rate fallback
+- Structured payment instructions with copy actions
+- Native HIVE/HBD launch link for Hivesigner
+- Automatic payment window expiry with WooCommerce order cancellation and stock restoration
 - Action Scheduler polling with WP-Cron fallback
 - WooCommerce Blocks checkout support
 - Admin-configurable confirmations, polling interval, and logging
@@ -28,32 +32,40 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 - **Memo prefix**: Prefix for memos (e.g., `WC`).
 - **Memo random length**: Length of the random token (default 24). Longer reduces clashes.
 - **Accepted assets**: Choose HIVE and/or HBD.
+- **Hive Engine tokens**: Add one token per line as `SYMBOL|Optional Label|Optional Manual Rate`.
 - **Default asset**: Default choice at checkout.
-- **Rate source**: Live (CoinGecko) or Manual.
+- **Rate source**: Live or Manual.
 - **CoinGecko API plan**: Default is **No API key**. Select Demo/Pro if you have a key.
 - **CoinGecko API key**: Optional.
-- **Rate cache**: Cache pricing for N minutes (default 5).
-- **Manual rates**: Used if live pricing fails or if you select Manual.
+- **Live rate cache**: Cache pricing for N minutes (default 5).
+- **Manual rates**: Used if live pricing fails or if you select Manual. Hive Engine token manual rates are configured per token line.
 - **Polling interval**: How often to check the blockchain.
 - **Minimum confirmations**: Blocks to wait before completing the order.
+- **Payment window**: How long the customer has to pay before the order is automatically cancelled.
 - **Debug logging**: Log poller activity to WooCommerce logs.
 
 ## Payment Flow
 1. Customer places order and selects Hive Payments.
 2. Order status moves to **on-hold**.
 3. A memo is generated like: `WC:1234:AbcDefGh...`.
-4. Customer sends the exact amount to the configured account with **that memo**.
-5. Poller detects a matching transfer and marks the order paid.
+4. Customer sees a payment card with the exact amount, destination account, memo, copy buttons, and the payment deadline.
+5. For native HIVE/HBD payments, the customer can launch a prefilled Hivesigner transfer.
+6. Customer sends the exact amount to the configured account with **that memo**.
+7. If no matching payment arrives before the deadline, the order is automatically cancelled and stock is restored.
+8. Native HIVE/HBD payments are matched from Hive `transfer` operations.
+9. Hive Engine token payments are matched from `ssc-mainnet-hive` `tokens.transfer` custom JSON operations.
+10. Poller detects the matching payment and marks the order paid.
 
 ## Strict Memo Matching
-- Only transfers with an **exact memo match** are accepted.
+- Only payments with an **exact memo match** are accepted.
 - This prevents memo collisions and accidental cross-order attribution.
 
 ## Live Pricing (CoinGecko)
 - Default behavior uses CoinGecko’s public API without a key.
 - You can supply a Demo or Pro API key if you want higher limits.
-- Rates are cached (default 5 minutes) to avoid excessive requests.
-- If rates can’t be fetched, the gateway falls back to manual rates.
+- Native asset rates are cached (default 5 minutes) to avoid excessive requests.
+- Hive Engine tokens use Hive Engine market prices in `SWAP.HIVE` and convert through the current HIVE rate.
+- If live rates can’t be fetched, the gateway falls back to configured manual rates.
 
 ## Logs & Troubleshooting
 - Enable **Debug logging** in the gateway settings.
@@ -61,8 +73,10 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 - If payments aren’t detected:
   - Verify the receiving Hive account name.
   - Confirm the customer used the exact memo.
+  - Confirm the payment arrived before the configured payment deadline.
+  - For Hive Engine tokens, confirm the customer used a Hive Engine compatible wallet and sent a `tokens.transfer`.
   - Ensure polling is running (Action Scheduler or WP-Cron).
-  - Check CoinGecko settings and cache interval.
+  - Check live pricing settings and cache interval.
 
 ## Developer Notes
 - Unit tests use Pest + Brain Monkey.
@@ -75,9 +89,9 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 ## Security & Safety
 - Uses the WordPress HTTP API and sanitizes settings.
 - Orders remain **on-hold** until a matching transfer is confirmed.
+- Unpaid Hive orders are automatically cancelled after the configured payment window.
 - Amount and asset mismatches are recorded in order notes.
 
 ## Roadmap Ideas
-- Hive Keychain deep link support
 - QR display for transfers
 - Additional rate providers

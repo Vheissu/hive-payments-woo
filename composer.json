@@ -4,10 +4,10 @@
   "type": "wordpress-plugin",
   "license": "GPL-2.0-or-later",
   "require-dev": {
-    "pestphp/pest": "^2.0",
+    "pestphp/pest": "^1.23",
     "phpunit/phpunit": "^9.6",
     "brain/monkey": "^2.6",
-    "mockery/mockery": "^1.6"
+    "mockery/mockery": "^1.5.1"
   },
   "autoload-dev": {
     "psr-4": {
@@ -21,6 +21,6 @@
     "sort-packages": true
   },
   "scripts": {
-    "test": "pest"
+    "test": "php -d error_reporting='E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED' vendor/bin/pest tests"
   }
 }

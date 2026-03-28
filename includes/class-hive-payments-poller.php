@@ -73,6 +73,8 @@ class Hive_Payments_Poller {
 			return;
 		}
 
+		$this->expire_stale_orders();
+
 		$account = isset( $settings['hive_account'] ) ? sanitize_text_field( $settings['hive_account'] ) : '';
 		$account = strtolower( ltrim( $account, '@' ) );
 		if ( empty( $account ) ) {
@@ -127,38 +129,29 @@ class Hive_Payments_Poller {
 				$min_seen = null === $min_seen ? $index : min( $min_seen, $index );
 
 				$op = $entry[1];
-				$transfer = self::extract_transfer_op( $op );
-				if ( empty( $transfer ) ) {
-					continue;
-				}
-				if ( empty( $transfer['to'] ) ) {
-					continue;
-				}
-				if ( $account !== strtolower( $transfer['to'] ) ) {
-					continue;
-				}
-
-				$memo = isset( $transfer['memo'] ) ? trim( $transfer['memo'] ) : '';
-				if ( '' === $memo ) {
-					continue;
-				}
-
-				$parsed = self::parse_amount( $transfer['amount'] ?? '' );
-				if ( empty( $parsed ) ) {
-					continue;
-				}
-
-				$amount = $parsed['amount'];
-				$asset  = $parsed['asset'];
-				$block  = isset( $op['block'] ) ? (int) $op['block'] : 0;
-
-				if ( $min_confirmations > 0 && $head_block > 0 && $block > 0 ) {
-					if ( ( $head_block - $block ) < $min_confirmations ) {
+				$candidates = self::extract_payment_candidates( $op );
+				foreach ( $candidates as $candidate ) {
+					if ( empty( $candidate['to'] ) || $account !== strtolower( $candidate['to'] ) ) {
 						continue;
 					}
-				}
 
-				$this->match_orders( $memo, $amount, $asset, $op['trx_id'] ?? '' );
+					if ( empty( $candidate['memo'] ) ) {
+						continue;
+					}
+
+					if ( ! self::candidate_has_confirmations( $candidate, $head_block, $min_confirmations ) ) {
+						continue;
+					}
+
+					$this->match_orders(
+						$candidate['memo'],
+						$candidate['amount'],
+						$candidate['asset'],
+						$candidate['trx_id'],
+						$candidate['kind'],
+						$candidate['amount_display']
+					);
+				}
 			}
 
 			$loops++;
@@ -202,7 +195,31 @@ class Hive_Payments_Poller {
 		}
 	}
 
-	private function match_orders( $memo, $amount, $asset, $trx_id ) {
+	private function expire_stale_orders() {
+		$orders = wc_get_orders(
+			array(
+				'limit'          => 25,
+				'payment_method' => 'hive_payments',
+				'status'         => array( 'on-hold', 'pending' ),
+				'meta_query'     => array(
+					array(
+						'key'     => '_hive_expires_at',
+						'compare' => 'EXISTS',
+					),
+				),
+			)
+		);
+
+		if ( empty( $orders ) ) {
+			return;
+		}
+
+		foreach ( $orders as $order ) {
+			self::expire_order_if_needed( $order );
+		}
+	}
+
+	private function match_orders( $memo, $amount, $asset, $trx_id, $asset_kind = '', $amount_display = '' ) {
 		$orders = wc_get_orders(
 			array(
 				'limit'          => 5,
@@ -219,6 +236,7 @@ class Hive_Payments_Poller {
 
 		foreach ( $orders as $order ) {
 			$expected_asset  = $order->get_meta( '_hive_asset' );
+			$expected_kind   = self::get_order_asset_kind( $order );
 			$expected_amount = (float) $order->get_meta( '_hive_amount' );
 
 			if ( $expected_asset !== $asset ) {
@@ -226,12 +244,18 @@ class Hive_Payments_Poller {
 				continue;
 			}
 
-			if ( $amount + 0.0001 < $expected_amount ) {
-				$order->add_order_note( sprintf( 'Hive payment amount mismatch. Expected %s %s, received %s %s.', $expected_amount, $asset, $amount, $asset ) );
+			if ( '' !== $expected_kind && '' !== $asset_kind && $expected_kind !== $asset_kind ) {
+				$order->add_order_note( sprintf( 'Hive payment asset type mismatch. Expected %s, received %s.', $expected_kind, $asset_kind ) );
 				continue;
 			}
 
-			self::mark_order_paid( $order, $amount, $asset, $trx_id );
+			if ( $amount + 0.0001 < $expected_amount ) {
+				$received_amount = '' !== $amount_display ? $amount_display : (string) $amount;
+				$order->add_order_note( sprintf( 'Hive payment amount mismatch. Expected %s %s, received %s %s.', $expected_amount, $asset, $received_amount, $asset ) );
+				continue;
+			}
+
+			self::mark_order_paid( $order, $amount, $asset, $trx_id, $amount_display );
 		}
 	}
 
@@ -245,6 +269,10 @@ class Hive_Payments_Poller {
 
 		if ( $order->has_status( array( 'processing', 'completed' ) ) ) {
 			return array( 'status' => 'paid' );
+		}
+
+		if ( self::expire_order_if_needed( $order ) ) {
+			return array( 'status' => 'expired' );
 		}
 
 		$settings = self::get_settings();
@@ -290,51 +318,26 @@ class Hive_Payments_Poller {
 				continue;
 			}
 			$op = $entry[1];
-			$transfer = self::extract_transfer_op( $op );
-			if ( empty( $transfer ) ) {
-				continue;
-			}
-			if ( empty( $transfer['to'] ) ) {
-				continue;
-			}
-			if ( $account !== strtolower( $transfer['to'] ) ) {
-				continue;
-			}
-
-			$memo_incoming = isset( $transfer['memo'] ) ? trim( $transfer['memo'] ) : '';
-			if ( '' === $memo_incoming || $memo_incoming !== $memo ) {
-				continue;
-			}
-
-			$parsed = self::parse_amount( $transfer['amount'] ?? '' );
-			if ( empty( $parsed ) ) {
-				continue;
-			}
-
-			$amount = $parsed['amount'];
-			$asset  = $parsed['asset'];
-			if ( $asset !== $expected_asset ) {
-				continue;
-			}
-			if ( $amount + 0.0001 < $expected_amount ) {
-				continue;
-			}
-
-			$block = isset( $op['block'] ) ? (int) $op['block'] : 0;
-			if ( $min_confirmations > 0 && $head_block > 0 && $block > 0 ) {
-				if ( ( $head_block - $block ) < $min_confirmations ) {
+			$candidates = self::extract_payment_candidates( $op );
+			$expected_kind = self::get_order_asset_kind( $order );
+			foreach ( $candidates as $candidate ) {
+				if ( ! self::candidate_matches_order( $candidate, $account, $memo, $expected_asset, $expected_amount, $expected_kind ) ) {
 					continue;
 				}
-			}
 
-			$trx_id = $op['trx_id'] ?? '';
-			self::mark_order_paid( $order, $amount, $asset, $trx_id );
-			return array(
-				'status' => 'paid',
-				'txid'   => $trx_id,
-				'amount' => $amount,
-				'asset'  => $asset,
-			);
+				if ( ! self::candidate_has_confirmations( $candidate, $head_block, $min_confirmations ) ) {
+					continue;
+				}
+
+				self::mark_order_paid( $order, $candidate['amount'], $candidate['asset'], $candidate['trx_id'], $candidate['amount_display'] );
+				return array(
+					'status' => 'paid',
+					'txid'   => $candidate['trx_id'],
+					'amount' => $candidate['amount'],
+					'asset'  => $candidate['asset'],
+					'kind'   => $candidate['kind'],
+				);
+			}
 		}
 
 		return array( 'status' => 'pending' );
@@ -354,8 +357,9 @@ class Hive_Payments_Poller {
 				return null;
 			}
 			return array(
-				'amount' => (float) $amount,
-				'asset'  => $asset,
+				'amount'         => (float) $amount,
+				'asset'          => $asset,
+				'amount_display' => number_format( (float) $amount, max( 0, $precision ), '.', '' ),
 			);
 		}
 
@@ -366,8 +370,9 @@ class Hive_Payments_Poller {
 			return null;
 		}
 		return array(
-			'amount' => (float) $matches[1],
-			'asset'  => $matches[2],
+			'amount'         => (float) $matches[1],
+			'asset'          => $matches[2],
+			'amount_display' => $matches[1],
 		);
 	}
 
@@ -404,15 +409,211 @@ class Hive_Payments_Poller {
 		return null;
 	}
 
-	private static function mark_order_paid( WC_Order $order, $amount, $asset, $trx_id ) {
-		$order->update_meta_data( '_hive_paid_amount', number_format( (float) $amount, 3, '.', '' ) );
+	private static function extract_payment_candidates( $op ) {
+		$candidates = array();
+
+		$native_transfer = self::extract_transfer_op( $op );
+		if ( ! empty( $native_transfer ) ) {
+			$parsed = self::parse_amount( $native_transfer['amount'] ?? '' );
+			if ( ! empty( $parsed ) ) {
+				$candidates[] = array(
+					'asset'          => $parsed['asset'],
+					'amount'         => $parsed['amount'],
+					'amount_display' => $parsed['amount_display'] ?? '',
+					'memo'           => isset( $native_transfer['memo'] ) ? trim( (string) $native_transfer['memo'] ) : '',
+					'to'             => isset( $native_transfer['to'] ) ? strtolower( trim( (string) $native_transfer['to'] ) ) : '',
+					'block'          => isset( $op['block'] ) ? (int) $op['block'] : 0,
+					'trx_id'         => (string) ( $op['trx_id'] ?? '' ),
+					'kind'           => Hive_Payments_Assets::KIND_NATIVE,
+				);
+			}
+		}
+
+		$custom_json = self::extract_custom_json_op( $op );
+		if ( empty( $custom_json ) || empty( $custom_json['id'] ) || 'ssc-mainnet-hive' !== $custom_json['id'] ) {
+			return $candidates;
+		}
+
+		$payload = self::decode_custom_json_payload( $custom_json['json'] ?? '' );
+		if ( empty( $payload ) ) {
+			return $candidates;
+		}
+
+		$actions = isset( $payload[0] ) ? $payload : array( $payload );
+		foreach ( $actions as $action ) {
+			if ( ! is_array( $action ) ) {
+				continue;
+			}
+
+			$contract_name    = strtolower( (string) ( $action['contractName'] ?? '' ) );
+			$contract_action  = strtolower( (string) ( $action['contractAction'] ?? '' ) );
+			$contract_payload = $action['contractPayload'] ?? array();
+
+			if ( 'tokens' !== $contract_name || 'transfer' !== $contract_action || ! is_array( $contract_payload ) ) {
+				continue;
+			}
+
+			$amount = self::parse_hive_engine_quantity( $contract_payload['quantity'] ?? '' );
+			$asset  = strtoupper( trim( (string) ( $contract_payload['symbol'] ?? '' ) ) );
+			$to     = strtolower( trim( (string) ( $contract_payload['to'] ?? '' ) ) );
+			$memo   = trim( (string) ( $contract_payload['memo'] ?? '' ) );
+
+			if ( empty( $amount ) || '' === $asset || '' === $to ) {
+				continue;
+			}
+
+			$candidates[] = array(
+				'asset'          => $asset,
+				'amount'         => $amount['amount'],
+				'amount_display' => $amount['display'],
+				'memo'           => $memo,
+				'to'             => $to,
+				'block'          => isset( $op['block'] ) ? (int) $op['block'] : 0,
+				'trx_id'         => (string) ( $op['trx_id'] ?? '' ),
+				'kind'           => Hive_Payments_Assets::KIND_HIVE_ENGINE,
+			);
+		}
+
+		return $candidates;
+	}
+
+	private static function extract_custom_json_op( $op ) {
+		if ( empty( $op['op'] ) || ! is_array( $op['op'] ) ) {
+			return null;
+		}
+
+		if ( isset( $op['op'][0] ) ) {
+			$op_type = $op['op'][0] ?? '';
+			$op_data = $op['op'][1] ?? array();
+			if ( 'custom_json' === $op_type ) {
+				return $op_data;
+			}
+			return null;
+		}
+
+		$type  = $op['op']['type'] ?? '';
+		$value = $op['op']['value'] ?? array();
+		if ( 'custom_json_operation' === $type ) {
+			return $value;
+		}
+
+		return null;
+	}
+
+	private static function decode_custom_json_payload( $json ) {
+		if ( is_array( $json ) ) {
+			return $json;
+		}
+
+		if ( ! is_string( $json ) || '' === trim( $json ) ) {
+			return array();
+		}
+
+		$decoded = json_decode( $json, true );
+		return is_array( $decoded ) ? $decoded : array();
+	}
+
+	private static function parse_hive_engine_quantity( $quantity ) {
+		if ( ! is_string( $quantity ) ) {
+			return null;
+		}
+
+		$quantity = trim( $quantity );
+		if ( ! preg_match( '/^\d+(?:\.\d+)?$/', $quantity ) ) {
+			return null;
+		}
+
+		return array(
+			'amount'  => (float) $quantity,
+			'display' => $quantity,
+		);
+	}
+
+	private static function candidate_has_confirmations( $candidate, $head_block, $min_confirmations ) {
+		if ( $min_confirmations <= 0 || $head_block <= 0 ) {
+			return true;
+		}
+
+		$block = isset( $candidate['block'] ) ? (int) $candidate['block'] : 0;
+		if ( $block <= 0 ) {
+			return true;
+		}
+
+		return ( $head_block - $block ) >= $min_confirmations;
+	}
+
+	private static function candidate_matches_order( $candidate, $account, $memo, $expected_asset, $expected_amount, $expected_kind = '' ) {
+		$incoming_account = isset( $candidate['to'] ) ? strtolower( (string) $candidate['to'] ) : '';
+		if ( '' === $incoming_account || strtolower( (string) $account ) !== $incoming_account ) {
+			return false;
+		}
+
+		$incoming_memo = isset( $candidate['memo'] ) ? (string) $candidate['memo'] : '';
+		if ( '' === $incoming_memo || $incoming_memo !== (string) $memo ) {
+			return false;
+		}
+
+		$incoming_asset = isset( $candidate['asset'] ) ? (string) $candidate['asset'] : '';
+		if ( '' === $incoming_asset || $incoming_asset !== (string) $expected_asset ) {
+			return false;
+		}
+
+		$incoming_amount = isset( $candidate['amount'] ) ? (float) $candidate['amount'] : 0;
+		if ( $incoming_amount + 0.0001 < (float) $expected_amount ) {
+			return false;
+		}
+
+		if ( '' !== $expected_kind ) {
+			$incoming_kind = isset( $candidate['kind'] ) ? (string) $candidate['kind'] : '';
+			if ( '' !== $incoming_kind && $incoming_kind !== $expected_kind ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private static function mark_order_paid( WC_Order $order, $amount, $asset, $trx_id, $amount_display = '' ) {
+		$paid_amount = '' !== $amount_display ? $amount_display : number_format( (float) $amount, 3, '.', '' );
+		$order->update_meta_data( '_hive_paid_amount', $paid_amount );
 		if ( $trx_id ) {
 			$order->update_meta_data( '_hive_txid', $trx_id );
 			$order->set_transaction_id( $trx_id );
 		}
 		$order->payment_complete( $trx_id );
-		$order->add_order_note( sprintf( 'Hive payment confirmed: %s %s', number_format( (float) $amount, 3, '.', '' ), $asset ) );
+		$order->add_order_note( sprintf( 'Hive payment confirmed: %s %s', $paid_amount, $asset ) );
 		$order->save();
+	}
+
+	private static function expire_order_if_needed( WC_Order $order, $now = null ) {
+		$expired_at = max( 0, (int) $order->get_meta( '_hive_expired_at' ) );
+		if ( $expired_at > 0 ) {
+			return true;
+		}
+
+		if ( 'hive_payments' !== $order->get_payment_method() ) {
+			return false;
+		}
+
+		if ( ! $order->has_status( array( 'on-hold', 'pending' ) ) ) {
+			return false;
+		}
+
+		$expires_at = Hive_Payments_Request::get_order_expires_at( $order );
+		if ( $expires_at <= 0 || ! Hive_Payments_Request::is_expired( $expires_at, $now ) ) {
+			return false;
+		}
+
+		$expired_at = null === $now ? time() : (int) $now;
+		$order->update_meta_data( '_hive_expired_at', (string) $expired_at );
+		$order->save();
+		$order->update_status( 'cancelled', __( 'Hive payment window expired before a matching payment was found.', 'hive-payments-woo' ) );
+
+		if ( function_exists( 'wc_maybe_increase_stock_levels' ) ) {
+			wc_maybe_increase_stock_levels( $order->get_id() );
+		}
+
+		return true;
 	}
 
 	private function log( $message ) {
@@ -426,6 +627,15 @@ class Hive_Payments_Poller {
 
 	private static function get_settings() {
 		return (array) get_option( 'woocommerce_hive_payments_settings', array() );
+	}
+
+	private static function get_order_asset_kind( WC_Order $order ) {
+		$kind = (string) $order->get_meta( '_hive_asset_kind' );
+		if ( '' !== $kind ) {
+			return $kind;
+		}
+
+		return Hive_Payments_Assets::infer_asset_kind( (string) $order->get_meta( '_hive_asset' ), self::get_settings() );
 	}
 
 	private static function get_poll_interval_seconds() {

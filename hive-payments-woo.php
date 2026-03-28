@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Hive Payments for WooCommerce
- * Description: Accept HIVE or HBD payments via the Hive blockchain with memo-based matching.
- * Version: 0.1.0
+ * Description: Accept HIVE, HBD, and custom Hive Engine token payments via Hive with memo-based matching.
+ * Version: 0.2.0
  * Author: Dwayne Charrington <dwaynecharrington@gmail.com>
  * Text Domain: hive-payments-woo
  * Domain Path: /languages
@@ -16,12 +16,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HIVE_PAYMENTS_VERSION', '0.1.0' );
+define( 'HIVE_PAYMENTS_VERSION', '0.2.0' );
 define( 'HIVE_PAYMENTS_PLUGIN_FILE', __FILE__ );
 define( 'HIVE_PAYMENTS_PLUGIN_PATH', __DIR__ );
 define( 'HIVE_PAYMENTS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
 require_once __DIR__ . '/includes/class-hive-payments-rpc.php';
+require_once __DIR__ . '/includes/class-hive-payments-assets.php';
+require_once __DIR__ . '/includes/class-hive-payments-request.php';
 require_once __DIR__ . '/includes/class-hive-payments-rates.php';
 require_once __DIR__ . '/includes/class-hive-payments-poller.php';
 require_once __DIR__ . '/includes/blocks/class-hive-payments-blocks.php';
@@ -107,8 +109,10 @@ function hive_payments_ajax_check_order() {
 	$order = wc_get_order( $order_id );
 	wp_send_json_success(
 		array(
-			'status' => $order ? $order->get_status() : '',
-			'result' => $result,
+			'status'    => $order ? $order->get_status() : '',
+			'result'    => $result,
+			'expiresAt' => $order ? Hive_Payments_Request::get_order_expires_at( $order ) : 0,
+			'expiredAt' => $order ? (int) $order->get_meta( '_hive_expired_at' ) : 0,
 		)
 	);
 }
@@ -136,6 +140,11 @@ function hive_payments_handle_order_action_check( $order ) {
 
 	if ( isset( $result['status'] ) && 'paid' === $result['status'] ) {
 		$order->add_order_note( __( 'Hive payment check: payment confirmed.', 'hive-payments-woo' ) );
+		return;
+	}
+
+	if ( isset( $result['status'] ) && 'expired' === $result['status'] ) {
+		$order->add_order_note( __( 'Hive payment check: payment window expired and the order was cancelled.', 'hive-payments-woo' ) );
 		return;
 	}
 

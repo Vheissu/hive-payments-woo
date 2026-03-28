@@ -5,15 +5,23 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class Hive_Payments_Rates {
-	const TRANSIENT_PREFIX = 'hive_payments_rates_';
-	const COINGECKO_BASE   = 'https://api.coingecko.com/api/v3';
+	const TRANSIENT_PREFIX          = 'hive_payments_rates_';
+	const COINGECKO_BASE            = 'https://api.coingecko.com/api/v3';
+	const HIVE_ENGINE_CONTRACTS_RPC = 'https://api.hive-engine.com/rpc/contracts';
 
 	public static function get_rate( $asset, $vs_currency, $settings ) {
+		$settings = is_array( $settings ) ? $settings : array();
+		$asset    = strtoupper( sanitize_text_field( (string) $asset ) );
+		$meta     = Hive_Payments_Assets::get_asset( $settings, $asset );
+
+		if ( is_array( $meta ) && Hive_Payments_Assets::KIND_HIVE_ENGINE === $meta['kind'] ) {
+			return self::get_hive_engine_rate( $asset, $vs_currency, $settings );
+		}
+
 		$rates = self::get_rates( $vs_currency, $settings );
 		if ( is_wp_error( $rates ) ) {
 			return $rates;
 		}
-
 		return isset( $rates[ $asset ] ) ? (float) $rates[ $asset ] : 0;
 	}
 
@@ -86,5 +94,165 @@ class Hive_Payments_Rates {
 		set_transient( $cache_key, $rates, $ttl );
 
 		return $rates;
+	}
+
+	public static function get_hive_engine_precision( $symbol ) {
+		$symbol = strtoupper( sanitize_text_field( (string) $symbol ) );
+		if ( '' === $symbol ) {
+			return new WP_Error( 'hive_engine_symbol_missing', 'Missing Hive Engine token symbol.' );
+		}
+
+		if ( 'SWAP.HIVE' === $symbol ) {
+			return 8;
+		}
+
+		$cache_key = self::TRANSIENT_PREFIX . 'he_precision_' . md5( $symbol );
+		$cached    = get_transient( $cache_key );
+		if ( false !== $cached && null !== $cached ) {
+			return (int) $cached;
+		}
+
+		$token = self::get_hive_engine_token( $symbol );
+		if ( is_wp_error( $token ) ) {
+			return $token;
+		}
+
+		if ( ! isset( $token['precision'] ) || ! is_numeric( $token['precision'] ) ) {
+			return new WP_Error( 'hive_engine_precision_missing', 'Hive Engine token precision is unavailable.', array( 'symbol' => $symbol ) );
+		}
+
+		$precision = (int) $token['precision'];
+		$ttl       = defined( 'HOUR_IN_SECONDS' ) ? HOUR_IN_SECONDS : 3600;
+		set_transient( $cache_key, $precision, $ttl );
+
+		return $precision;
+	}
+
+	private static function get_hive_engine_rate( $symbol, $vs_currency, $settings ) {
+		$symbol = strtoupper( sanitize_text_field( (string) $symbol ) );
+
+		$cache_key = self::TRANSIENT_PREFIX . 'he_rate_' . md5( $symbol . ':' . strtolower( $vs_currency ) );
+		$cached    = get_transient( $cache_key );
+		if ( false !== $cached && null !== $cached ) {
+			return (float) $cached;
+		}
+
+		$native_rates = self::get_rates( $vs_currency, $settings );
+		if ( is_wp_error( $native_rates ) ) {
+			return $native_rates;
+		}
+
+		$hive_rate = isset( $native_rates['HIVE'] ) ? (float) $native_rates['HIVE'] : 0;
+		if ( $hive_rate <= 0 ) {
+			return new WP_Error( 'hive_engine_hive_rate_missing', 'Unable to convert Hive Engine token rate without a HIVE price.', array( 'symbol' => $symbol ) );
+		}
+
+		if ( 'SWAP.HIVE' === $symbol ) {
+			return $hive_rate;
+		}
+
+		$metrics = self::get_hive_engine_market_metrics( $symbol );
+		if ( is_wp_error( $metrics ) ) {
+			return $metrics;
+		}
+
+		$last_price = isset( $metrics['lastPrice'] ) ? (float) $metrics['lastPrice'] : 0;
+		if ( $last_price <= 0 ) {
+			return new WP_Error( 'hive_engine_price_missing', 'Hive Engine market data is missing a last price.', array( 'symbol' => $symbol ) );
+		}
+
+		$rate = $last_price * $hive_rate;
+		if ( $rate <= 0 ) {
+			return new WP_Error( 'hive_engine_rate_invalid', 'Hive Engine token conversion produced an invalid rate.', array( 'symbol' => $symbol ) );
+		}
+
+		$cache_minutes = isset( $settings['coingecko_cache_minutes'] ) ? (int) $settings['coingecko_cache_minutes'] : 5;
+		$cache_minutes = max( 1, min( 60, $cache_minutes ) );
+		$ttl           = $cache_minutes * ( defined( 'MINUTE_IN_SECONDS' ) ? MINUTE_IN_SECONDS : 60 );
+		set_transient( $cache_key, $rate, $ttl );
+
+		return $rate;
+	}
+
+	private static function get_hive_engine_market_metrics( $symbol ) {
+		$symbol = strtoupper( sanitize_text_field( (string) $symbol ) );
+		$result = self::contracts_rpc_call(
+			'findOne',
+			array(
+				'contract' => 'market',
+				'table'    => 'metrics',
+				'query'    => array( 'symbol' => $symbol ),
+			)
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		if ( ! is_array( $result ) || empty( $result ) ) {
+			return new WP_Error( 'hive_engine_market_missing', 'Hive Engine market data was not found.', array( 'symbol' => $symbol ) );
+		}
+
+		return $result;
+	}
+
+	private static function get_hive_engine_token( $symbol ) {
+		$symbol = strtoupper( sanitize_text_field( (string) $symbol ) );
+		$result = self::contracts_rpc_call(
+			'findOne',
+			array(
+				'contract' => 'tokens',
+				'table'    => 'tokens',
+				'query'    => array( 'symbol' => $symbol ),
+			)
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		if ( ! is_array( $result ) || empty( $result ) ) {
+			return new WP_Error( 'hive_engine_token_missing', 'Hive Engine token metadata was not found.', array( 'symbol' => $symbol ) );
+		}
+
+		return $result;
+	}
+
+	private static function contracts_rpc_call( $method, $params ) {
+		$payload = array(
+			'jsonrpc' => '2.0',
+			'id'      => time(),
+			'method'  => $method,
+			'params'  => $params,
+		);
+
+		$response = wp_remote_post(
+			self::HIVE_ENGINE_CONTRACTS_RPC,
+			array(
+				'timeout' => 10,
+				'headers' => array(
+					'Accept'       => 'application/json',
+					'Content-Type' => 'application/json',
+				),
+				'body'    => wp_json_encode( $payload ),
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+		$body = wp_remote_retrieve_body( $response );
+		if ( $code < 200 || $code >= 300 ) {
+			return new WP_Error( 'hive_engine_rpc_http_error', 'Hive Engine contracts RPC HTTP error.', array( 'status' => $code, 'body' => $body ) );
+		}
+
+		$data = json_decode( $body, true );
+		if ( ! is_array( $data ) || isset( $data['error'] ) ) {
+			return new WP_Error( 'hive_engine_rpc_error', 'Hive Engine contracts RPC error.', array( 'body' => $data ) );
+		}
+
+		return $data['result'] ?? null;
 	}
 }

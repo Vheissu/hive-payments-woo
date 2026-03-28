@@ -1,0 +1,111 @@
+.woocommerce-hive-instructions,
+.woocommerce-hive-status {
+	--hive-border: #d0d7de;
+	--hive-surface: linear-gradient(180deg, #fbfdff 0%, #f4f8fb 100%);
+	--hive-ink: #102a43;
+	--hive-muted: #486581;
+	--hive-accent: #1177cc;
+	--hive-success: #0f766e;
+	--hive-warning: #b45309;
+	--hive-danger: #b42318;
+	border: 1px solid var(--hive-border);
+	border-radius: 18px;
+	background: var(--hive-surface);
+	color: var(--hive-ink);
+	padding: 1.25rem;
+}
+
+.woocommerce-hive-instructions {
+	margin: 1.5rem 0 1rem;
+}
+
+.woocommerce-hive-instructions h2,
+.woocommerce-hive-status p {
+	margin-top: 0;
+}
+
+.woocommerce-hive-payment-card {
+	display: grid;
+	gap: 0.75rem;
+	margin: 1rem 0;
+}
+
+.woocommerce-hive-payment-row {
+	display: grid;
+	grid-template-columns: minmax(120px, 150px) minmax(0, 1fr) auto;
+	gap: 0.75rem;
+	align-items: center;
+	padding: 0.875rem 1rem;
+	border-radius: 14px;
+	background: rgba(255, 255, 255, 0.85);
+	box-shadow: inset 0 0 0 1px rgba(16, 42, 67, 0.06);
+}
+
+.woocommerce-hive-payment-row__label {
+	font-size: 0.92rem;
+	font-weight: 700;
+	color: var(--hive-muted);
+}
+
+.woocommerce-hive-payment-row__value {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+	font-size: 0.98rem;
+	word-break: break-word;
+}
+
+.woocommerce-hive-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	margin-top: 1rem;
+}
+
+.woocommerce-hive-actions .button,
+.woocommerce-hive-payment-row .button {
+	white-space: nowrap;
+}
+
+.woocommerce-hive-footnote,
+.woocommerce-hive-status__deadline,
+.woocommerce-hive-status__countdown {
+	margin-bottom: 0;
+	color: var(--hive-muted);
+}
+
+.woocommerce-hive-status {
+	margin: 1rem 0 1.5rem;
+}
+
+.woocommerce-hive-status.is-pending {
+	border-color: rgba(17, 119, 204, 0.25);
+}
+
+.woocommerce-hive-status.is-paid {
+	border-color: rgba(15, 118, 110, 0.25);
+	background: linear-gradient(180deg, #f2fffa 0%, #e7faf4 100%);
+}
+
+.woocommerce-hive-status.is-paid [data-hive-order-status-message] {
+	color: var(--hive-success);
+}
+
+.woocommerce-hive-status.is-expired {
+	border-color: rgba(180, 83, 9, 0.35);
+	background: linear-gradient(180deg, #fff8ef 0%, #fff1dd 100%);
+}
+
+.woocommerce-hive-status.is-expired [data-hive-order-status-message] {
+	color: var(--hive-warning);
+}
+
+@media (max-width: 720px) {
+	.woocommerce-hive-payment-row {
+		grid-template-columns: 1fr;
+	}
+
+	.woocommerce-hive-payment-row .button,
+	.woocommerce-hive-actions .button {
+		width: 100%;
+		text-align: center;
+	}
+}

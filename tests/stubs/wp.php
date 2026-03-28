@@ -29,3 +29,25 @@ if ( ! function_exists( 'is_wp_error' ) ) {
 		return $thing instanceof WP_Error;
 	}
 }
+
+if ( ! function_exists( 'wp_strip_all_tags' ) ) {
+	function wp_strip_all_tags( $value ) {
+		return strip_tags( (string) $value );
+	}
+}
+
+if ( ! function_exists( '__' ) ) {
+	function __( $text ) {
+		return $text;
+	}
+}
+
+if ( ! function_exists( 'wc_format_decimal' ) ) {
+	function wc_format_decimal( $number, $dp = false ) {
+		if ( false === $dp ) {
+			return (string) $number;
+		}
+
+		return number_format( (float) $number, (int) $dp, '.', '' );
+	}
+}
