@@ -125,6 +125,140 @@
 		});
 	}
 
+	function getActionMessageEl(triggerEl) {
+		if (!triggerEl || !triggerEl.closest) {
+			return document.querySelector('[data-hive-action-message]');
+		}
+
+		var section = triggerEl.closest('.woocommerce-hive-instructions');
+		return section ? section.querySelector('[data-hive-action-message]') : document.querySelector('[data-hive-action-message]');
+	}
+
+	function updateActionMessage(triggerEl, message, tone) {
+		var messageEl = getActionMessageEl(triggerEl);
+		if (!messageEl) {
+			return;
+		}
+
+		messageEl.textContent = message || '';
+		messageEl.classList.remove('is-success', 'is-error');
+		if (tone) {
+			messageEl.classList.add(tone);
+		}
+	}
+
+	function setButtonBusy(button, busyLabel) {
+		if (!button) {
+			return function () {};
+		}
+
+		var original = button.getAttribute('data-hive-original-label') || button.textContent;
+		button.setAttribute('data-hive-original-label', original);
+		button.disabled = true;
+		button.textContent = busyLabel;
+
+		return function () {
+			button.disabled = false;
+			button.textContent = button.getAttribute('data-hive-original-label') || original;
+		};
+	}
+
+	function handleKeychainResponse(button, response) {
+		var success = response && (response.success === true || (!response.error && response.result));
+		if (success) {
+			updateActionMessage(
+				button,
+				'Transaction submitted. Waiting for blockchain confirmation.',
+				'is-success'
+			);
+			updateStatus(
+				settings && settings.pendingMessage
+					? settings.pendingMessage
+					: 'Waiting for the exact Hive payment.'
+			);
+			window.setTimeout(function () {
+				checkOrder();
+			}, 5000);
+			return;
+		}
+
+		var errorMessage = response && (response.message || response.error);
+		updateActionMessage(
+			button,
+			errorMessage || 'Keychain did not complete the request. You can still use Hivesigner or send the transfer manually.',
+			'is-error'
+		);
+	}
+
+	function initKeychainButtons() {
+		var buttons = Array.prototype.slice.call(document.querySelectorAll('[data-hive-keychain]'));
+		if (!buttons.length) {
+			return;
+		}
+
+		buttons.forEach(function (button) {
+			button.addEventListener('click', function () {
+				if (!window.hive_keychain) {
+					updateActionMessage(
+						button,
+						'Hive Keychain was not detected in this browser. Use Hivesigner or send the transfer manually.',
+						'is-error'
+					);
+					return;
+				}
+
+				var raw = button.getAttribute('data-hive-keychain') || '';
+				if (!raw) {
+					updateActionMessage(button, 'Payment data is unavailable for this request.', 'is-error');
+					return;
+				}
+
+				var request;
+				try {
+					request = JSON.parse(raw);
+				} catch (error) {
+					updateActionMessage(button, 'Payment data could not be parsed for Keychain.', 'is-error');
+					return;
+				}
+
+				var restoreButton = setButtonBusy(button, 'Opening Keychain...');
+				var callback = function (response) {
+					restoreButton();
+					handleKeychainResponse(button, response || {});
+				};
+
+				updateActionMessage(button, 'Opening Hive Keychain...', null);
+
+				if (request.type === 'native') {
+					window.hive_keychain.requestTransfer(
+						null,
+						request.to,
+						request.amount,
+						request.memo,
+						request.currency,
+						callback
+					);
+					return;
+				}
+
+				if (request.type === 'hive_engine') {
+					window.hive_keychain.requestCustomJson(
+						null,
+						request.id,
+						request.authority,
+						request.json,
+						request.displayMessage || 'Send Hive Engine payment',
+						callback
+					);
+					return;
+				}
+
+				restoreButton();
+				updateActionMessage(button, 'Unsupported Keychain payment type.', 'is-error');
+			});
+		});
+	}
+
 	function markExpired() {
 		pollingStopped = true;
 		setStatusClass('is-expired');
@@ -225,6 +359,7 @@
 	}
 
 	initCopyButtons();
+	initKeychainButtons();
 	updateCountdowns();
 	if (countdownEls.length) {
 		window.setInterval(updateCountdowns, 1000);

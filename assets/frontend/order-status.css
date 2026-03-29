@@ -66,6 +66,7 @@
 }
 
 .woocommerce-hive-footnote,
+.woocommerce-hive-action-message,
 .woocommerce-hive-status__deadline,
 .woocommerce-hive-status__countdown {
 	margin-bottom: 0;
@@ -96,6 +97,19 @@
 
 .woocommerce-hive-status.is-expired [data-hive-order-status-message] {
 	color: var(--hive-warning);
+}
+
+.woocommerce-hive-action-message {
+	min-height: 1.5em;
+	margin-top: 0.25rem;
+}
+
+.woocommerce-hive-action-message.is-success {
+	color: var(--hive-success);
+}
+
+.woocommerce-hive-action-message.is-error {
+	color: var(--hive-danger);
 }
 
 @media (max-width: 720px) {

@@ -57,6 +57,10 @@ class Hive_Payments_Request {
 	}
 
 	public static function build_wallet_url( $payment_details ) {
+		return self::build_hivesigner_url( $payment_details );
+	}
+
+	public static function build_hivesigner_url( $payment_details ) {
 		$payment_details = is_array( $payment_details ) ? $payment_details : array();
 		$account         = isset( $payment_details['account'] ) ? ltrim( trim( (string) $payment_details['account'] ), '@' ) : '';
 		$amount          = isset( $payment_details['amount'] ) ? trim( (string) $payment_details['amount'] ) : '';
@@ -81,6 +85,65 @@ class Hive_Payments_Request {
 			'',
 			'&',
 			PHP_QUERY_RFC3986
+		);
+	}
+
+	public static function build_keychain_request( $payment_details ) {
+		$payment_details = is_array( $payment_details ) ? $payment_details : array();
+		$account         = isset( $payment_details['account'] ) ? ltrim( trim( (string) $payment_details['account'] ), '@' ) : '';
+		$amount          = isset( $payment_details['amount'] ) ? trim( (string) $payment_details['amount'] ) : '';
+		$asset           = isset( $payment_details['asset'] ) ? strtoupper( trim( (string) $payment_details['asset'] ) ) : '';
+		$memo            = isset( $payment_details['memo'] ) ? (string) $payment_details['memo'] : '';
+		$asset_kind      = isset( $payment_details['asset_kind'] ) ? (string) $payment_details['asset_kind'] : '';
+
+		if ( '' === $account || '' === $amount || '' === $asset || '' === $memo ) {
+			return array();
+		}
+
+		if ( Hive_Payments_Assets::KIND_NATIVE === $asset_kind ) {
+			return array(
+				'type'          => Hive_Payments_Assets::KIND_NATIVE,
+				'to'            => $account,
+				'amount'        => $amount,
+				'memo'          => $memo,
+				'currency'      => $asset,
+				'displayMessage' => sprintf(
+					/* translators: 1: amount, 2: asset symbol, 3: destination account. */
+					__( 'Pay %1$s %2$s to @%3$s', 'hive-payments-woo' ),
+					$amount,
+					$asset,
+					$account
+				),
+			);
+		}
+
+		if ( Hive_Payments_Assets::KIND_HIVE_ENGINE !== $asset_kind ) {
+			return array();
+		}
+
+		$payload = array(
+			'contractName'   => 'tokens',
+			'contractAction' => 'transfer',
+			'contractPayload' => array(
+				'symbol'   => $asset,
+				'to'       => $account,
+				'quantity' => $amount,
+				'memo'     => $memo,
+			),
+		);
+
+		return array(
+			'type'          => Hive_Payments_Assets::KIND_HIVE_ENGINE,
+			'id'            => 'ssc-mainnet-hive',
+			'authority'     => 'Active',
+			'json'          => self::encode_json( $payload ),
+			'displayMessage' => sprintf(
+				/* translators: 1: amount, 2: asset symbol, 3: destination account. */
+				__( 'Pay %1$s %2$s to @%3$s via Hive Engine', 'hive-payments-woo' ),
+				$amount,
+				$asset,
+				$account
+			),
 		);
 	}
 
@@ -115,5 +178,13 @@ class Hive_Payments_Request {
 		}
 
 		return gmdate( 'Y-m-d H:i:s \\U\\T\\C', $timestamp );
+	}
+
+	private static function encode_json( $value ) {
+		if ( function_exists( 'wp_json_encode' ) ) {
+			return (string) wp_json_encode( $value );
+		}
+
+		return (string) json_encode( $value );
 	}
 }

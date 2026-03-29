@@ -613,6 +613,8 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 		$details['expires_at_display'] = Hive_Payments_Request::format_timestamp( $expires_at );
 		$details['expired_at_display'] = Hive_Payments_Request::format_timestamp( $expired_at );
 		$details['wallet_url']         = Hive_Payments_Request::build_wallet_url( $details );
+		$details['hivesigner_url']     = Hive_Payments_Request::build_hivesigner_url( $details );
+		$details['keychain_request']   = Hive_Payments_Request::build_keychain_request( $details );
 		$details['copy_text']          = Hive_Payments_Request::build_copy_text( $details );
 
 		return $details;
@@ -723,11 +725,15 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 		}
 		$html .= '</div>';
 		$html .= '<div class="woocommerce-hive-actions">';
-		$html .= '<button type="button" class="button" data-hive-copy="' . $copy_text . '">' . esc_html__( 'Copy payment details', 'hive-payments-woo' ) . '</button>';
-		if ( $is_pending && ! empty( $data['wallet_url'] ) ) {
-			$html .= '<a class="button alt" href="' . esc_url( $data['wallet_url'] ) . '" target="_blank" rel="noopener noreferrer">' . esc_html__( 'Open in Hivesigner', 'hive-payments-woo' ) . '</a>';
+		if ( $is_pending && ! empty( $data['keychain_request'] ) ) {
+			$html .= '<button type="button" class="button alt" data-hive-keychain="' . esc_attr( wp_json_encode( $data['keychain_request'] ) ) . '">' . esc_html__( 'Pay now with Keychain', 'hive-payments-woo' ) . '</button>';
 		}
+		if ( $is_pending && ! empty( $data['hivesigner_url'] ) ) {
+			$html .= '<a class="button" href="' . esc_url( $data['hivesigner_url'] ) . '" target="_blank" rel="noopener noreferrer">' . esc_html__( 'Open in Hivesigner', 'hive-payments-woo' ) . '</a>';
+		}
+		$html .= '<button type="button" class="button" data-hive-copy="' . $copy_text . '">' . esc_html__( 'Copy payment details', 'hive-payments-woo' ) . '</button>';
 		$html .= '</div>';
+		$html .= '<p class="woocommerce-hive-action-message" data-hive-action-message="1" aria-live="polite"></p>';
 		if ( $is_pending ) {
 			$html .= '<p class="woocommerce-hive-footnote">' . esc_html__( 'The amount and memo must match exactly or the order will stay unpaid.', 'hive-payments-woo' ) . '</p>';
 		}

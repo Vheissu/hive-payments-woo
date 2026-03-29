@@ -9,6 +9,7 @@ Accept HIVE, HBD, or custom Hive Engine token payments using Hive. Payments are 
 - Live pricing via CoinGecko for native assets and Hive Engine market data for tokens
 - Manual rate fallback
 - Structured payment instructions with copy actions
+- One-click `Pay now with Keychain` flow for native and Hive Engine payments
 - Native HIVE/HBD launch link for Hivesigner
 - Automatic payment window expiry with WooCommerce order cancellation and stock restoration
 - Action Scheduler polling with WP-Cron fallback
@@ -48,13 +49,15 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 1. Customer places order and selects Hive Payments.
 2. Order status moves to **on-hold**.
 3. A memo is generated like: `WC:1234:AbcDefGh...`.
-4. Customer sees a payment card with the exact amount, destination account, memo, copy buttons, and the payment deadline.
-5. For native HIVE/HBD payments, the customer can launch a prefilled Hivesigner transfer.
-6. Customer sends the exact amount to the configured account with **that memo**.
-7. If no matching payment arrives before the deadline, the order is automatically cancelled and stock is restored.
-8. Native HIVE/HBD payments are matched from Hive `transfer` operations.
-9. Hive Engine token payments are matched from `ssc-mainnet-hive` `tokens.transfer` custom JSON operations.
-10. Poller detects the matching payment and marks the order paid.
+4. Customer sees a payment card with the exact amount, destination account, memo, copy actions, and the payment deadline.
+5. The order page offers `Pay now with Keychain`, which opens a prefilled transaction for native HIVE/HBD transfers or Hive Engine `tokens.transfer` custom JSON operations.
+6. For native HIVE/HBD payments, the customer can also launch a prefilled Hivesigner transfer.
+7. Manual copy/send remains available for any compatible wallet.
+8. Customer sends the exact amount to the configured account with **that memo**.
+9. If no matching payment arrives before the deadline, the order is automatically cancelled and stock is restored.
+10. Native HIVE/HBD payments are matched from Hive `transfer` operations.
+11. Hive Engine token payments are matched from `ssc-mainnet-hive` `tokens.transfer` custom JSON operations.
+12. Poller detects the matching payment and marks the order paid.
 
 ## Strict Memo Matching
 - Only payments with an **exact memo match** are accepted.
