@@ -16,6 +16,7 @@ This guide provides deeper configuration details for Hive Payments for WooCommer
 - Native assets use CoinGecko live pricing.
 - Hive Engine tokens use Hive Engine market prices in `SWAP.HIVE`, then convert through the HIVE rate.
 - If live pricing fails, the plugin falls back to manual rates.
+- The Hive Engine RPC endpoint can be changed if you run or trust a different contracts API.
 
 ## 3) Polling & Confirmations
 - The poller uses Action Scheduler when available; otherwise it falls back to WP-Cron.
@@ -26,8 +27,9 @@ This guide provides deeper configuration details for Hive Payments for WooCommer
 
 ## 4) Accepted Assets
 - Enable HIVE and/or HBD.
-- Add Hive Engine tokens one per line as `SYMBOL|Optional Label|Optional Manual Rate`.
-- Example: `BEE|Hive Engine Token|0.25`
+- Add Hive Engine tokens one per line as `SYMBOL|Optional Label|Optional Manual Rate|Optional Precision`.
+- Example: `BEE|Hive Engine Token|0.25|8`
+- Precision is fetched from Hive Engine metadata when available. The optional precision field is a fallback for checkout calculation if metadata is temporarily unavailable.
 - If your store currency is already HIVE/HBD, the amount is used directly.
 - Hive Engine token payments require a Hive Engine compatible wallet and are matched from `tokens.transfer` custom JSON operations with the exact memo.
 - Native HIVE/HBD payments also expose a prefilled Hivesigner transfer link on the order screen.
@@ -41,5 +43,7 @@ This guide provides deeper configuration details for Hive Payments for WooCommer
 
 ## 6) Security Notes
 - Orders remain on-hold until a valid transfer matches.
+- Token amounts are compared as decimal strings so high-precision Hive Engine underpayments are not accepted by float tolerance.
+- Each confirmed blockchain payment candidate is recorded to prevent reuse across orders.
 - Expired unpaid orders are cancelled automatically and WooCommerce stock is restored.
 - Mismatches are recorded in order notes for manual review.

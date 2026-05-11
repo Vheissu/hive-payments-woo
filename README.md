@@ -4,7 +4,7 @@ Accept HIVE, HBD, or custom Hive Engine token payments using Hive. Payments are 
 
 ## Features
 - HIVE and HBD support
-- Custom Hive Engine token support
+- Custom Hive Engine token support with optional manual rates and precision fallback
 - Strict memo matching (unique long token per order)
 - Live pricing via CoinGecko for native assets and Hive Engine market data for tokens
 - Manual rate fallback
@@ -17,7 +17,7 @@ Accept HIVE, HBD, or custom Hive Engine token payments using Hive. Payments are 
 - Admin-configurable confirmations, polling interval, and logging
 
 ## Requirements
-- PHP 8.5+ (latest PHP 8.x as of Jan 2026)
+- PHP 8.4+
 - WooCommerce 10.4+ (tested up to 10.4.3)
 - WordPress 6.x
 
@@ -33,7 +33,8 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 - **Memo prefix**: Prefix for memos (e.g., `WC`).
 - **Memo random length**: Length of the random token (default 24). Longer reduces clashes.
 - **Accepted assets**: Choose HIVE and/or HBD.
-- **Hive Engine tokens**: Add one token per line as `SYMBOL|Optional Label|Optional Manual Rate`.
+- **Hive Engine tokens**: Add one token per line as `SYMBOL|Optional Label|Optional Manual Rate|Optional Precision`.
+- **Hive Engine RPC endpoint**: Contracts endpoint used for token metadata and market prices.
 - **Default asset**: Default choice at checkout.
 - **Rate source**: Live or Manual.
 - **CoinGecko API plan**: Default is **No API key**. Select Demo/Pro if you have a key.
@@ -68,6 +69,7 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 - You can supply a Demo or Pro API key if you want higher limits.
 - Native asset rates are cached (default 5 minutes) to avoid excessive requests.
 - Hive Engine tokens use Hive Engine market prices in `SWAP.HIVE` and convert through the current HIVE rate.
+- Hive Engine token precision is read from token metadata. If the contracts API is unavailable, the optional configured precision is used as a fallback.
 - If live rates can’t be fetched, the gateway falls back to configured manual rates.
 
 ## Logs & Troubleshooting
@@ -92,6 +94,8 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 ## Security & Safety
 - Uses the WordPress HTTP API and sanitizes settings.
 - Orders remain **on-hold** until a matching transfer is confirmed.
+- High-precision token amounts are compared as decimal strings, not loose floats.
+- Confirmed payment candidates are stored so the same blockchain operation cannot be reused for another order.
 - Unpaid Hive orders are automatically cancelled after the configured payment window.
 - Amount and asset mismatches are recorded in order notes.
 

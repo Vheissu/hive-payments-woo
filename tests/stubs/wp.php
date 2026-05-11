@@ -51,3 +51,71 @@ if ( ! function_exists( 'wc_format_decimal' ) ) {
 		return number_format( (float) $number, (int) $dp, '.', '' );
 	}
 }
+
+if ( ! class_exists( 'WC_Order' ) ) {
+	class WC_Order {
+		public $id;
+		public $status;
+		public $meta;
+		public $payment_method;
+		public $notes = array();
+		public $transaction_id = '';
+
+		public function __construct( $id, $status = 'on-hold', $meta = array(), $payment_method = 'hive_payments' ) {
+			$this->id             = $id;
+			$this->status         = $status;
+			$this->meta           = $meta;
+			$this->payment_method = $payment_method;
+		}
+
+		public function get_id() {
+			return $this->id;
+		}
+
+		public function get_payment_method() {
+			return $this->payment_method;
+		}
+
+		public function has_status( $statuses ) {
+			return in_array( $this->status, (array) $statuses, true );
+		}
+
+		public function get_status() {
+			return $this->status;
+		}
+
+		public function get_meta( $key ) {
+			return $this->meta[ $key ] ?? '';
+		}
+
+		public function update_meta_data( $key, $value ) {
+			$this->meta[ $key ] = (string) $value;
+		}
+
+		public function save() {
+			return true;
+		}
+
+		public function update_status( $status, $note = '' ) {
+			$this->status = $status;
+			if ( '' !== $note ) {
+				$this->meta['_last_note'] = $note;
+			}
+		}
+
+		public function add_order_note( $note ) {
+			$this->notes[] = $note;
+		}
+
+		public function set_transaction_id( $transaction_id ) {
+			$this->transaction_id = $transaction_id;
+		}
+
+		public function payment_complete( $transaction_id = '' ) {
+			$this->status = 'processing';
+			if ( '' !== $transaction_id ) {
+				$this->set_transaction_id( $transaction_id );
+			}
+		}
+	}
+}

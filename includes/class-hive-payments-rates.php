@@ -96,7 +96,8 @@ class Hive_Payments_Rates {
 		return $rates;
 	}
 
-	public static function get_hive_engine_precision( $symbol ) {
+	public static function get_hive_engine_precision( $symbol, $settings = array() ) {
+		$settings = is_array( $settings ) ? $settings : array();
 		$symbol = strtoupper( sanitize_text_field( (string) $symbol ) );
 		if ( '' === $symbol ) {
 			return new WP_Error( 'hive_engine_symbol_missing', 'Missing Hive Engine token symbol.' );
@@ -112,12 +113,22 @@ class Hive_Payments_Rates {
 			return (int) $cached;
 		}
 
-		$token = self::get_hive_engine_token( $symbol );
+		$token = self::get_hive_engine_token( $symbol, $settings );
 		if ( is_wp_error( $token ) ) {
+			$configured_precision = self::get_configured_hive_engine_precision( $symbol, $settings );
+			if ( null !== $configured_precision ) {
+				return $configured_precision;
+			}
+
 			return $token;
 		}
 
 		if ( ! isset( $token['precision'] ) || ! is_numeric( $token['precision'] ) ) {
+			$configured_precision = self::get_configured_hive_engine_precision( $symbol, $settings );
+			if ( null !== $configured_precision ) {
+				return $configured_precision;
+			}
+
 			return new WP_Error( 'hive_engine_precision_missing', 'Hive Engine token precision is unavailable.', array( 'symbol' => $symbol ) );
 		}
 
@@ -151,7 +162,7 @@ class Hive_Payments_Rates {
 			return $hive_rate;
 		}
 
-		$metrics = self::get_hive_engine_market_metrics( $symbol );
+		$metrics = self::get_hive_engine_market_metrics( $symbol, $settings );
 		if ( is_wp_error( $metrics ) ) {
 			return $metrics;
 		}
@@ -174,7 +185,7 @@ class Hive_Payments_Rates {
 		return $rate;
 	}
 
-	private static function get_hive_engine_market_metrics( $symbol ) {
+	private static function get_hive_engine_market_metrics( $symbol, $settings = array() ) {
 		$symbol = strtoupper( sanitize_text_field( (string) $symbol ) );
 		$result = self::contracts_rpc_call(
 			'findOne',
@@ -182,7 +193,8 @@ class Hive_Payments_Rates {
 				'contract' => 'market',
 				'table'    => 'metrics',
 				'query'    => array( 'symbol' => $symbol ),
-			)
+			),
+			$settings
 		);
 
 		if ( is_wp_error( $result ) ) {
@@ -196,7 +208,7 @@ class Hive_Payments_Rates {
 		return $result;
 	}
 
-	private static function get_hive_engine_token( $symbol ) {
+	private static function get_hive_engine_token( $symbol, $settings = array() ) {
 		$symbol = strtoupper( sanitize_text_field( (string) $symbol ) );
 		$result = self::contracts_rpc_call(
 			'findOne',
@@ -204,7 +216,8 @@ class Hive_Payments_Rates {
 				'contract' => 'tokens',
 				'table'    => 'tokens',
 				'query'    => array( 'symbol' => $symbol ),
-			)
+			),
+			$settings
 		);
 
 		if ( is_wp_error( $result ) ) {
@@ -218,7 +231,12 @@ class Hive_Payments_Rates {
 		return $result;
 	}
 
-	private static function contracts_rpc_call( $method, $params ) {
+	private static function contracts_rpc_call( $method, $params, $settings = array() ) {
+		$endpoint = self::get_hive_engine_rpc_endpoint( $settings );
+		if ( is_wp_error( $endpoint ) ) {
+			return $endpoint;
+		}
+
 		$payload = array(
 			'jsonrpc' => '2.0',
 			'id'      => time(),
@@ -227,7 +245,7 @@ class Hive_Payments_Rates {
 		);
 
 		$response = wp_remote_post(
-			self::HIVE_ENGINE_CONTRACTS_RPC,
+			$endpoint,
 			array(
 				'timeout' => 10,
 				'headers' => array(
@@ -254,5 +272,36 @@ class Hive_Payments_Rates {
 		}
 
 		return $data['result'] ?? null;
+	}
+
+	private static function get_configured_hive_engine_precision( $symbol, $settings ) {
+		$asset = Hive_Payments_Assets::get_asset( $settings, $symbol );
+		if ( is_array( $asset ) && array_key_exists( 'precision', $asset ) && null !== $asset['precision'] ) {
+			return (int) $asset['precision'];
+		}
+
+		return null;
+	}
+
+	private static function get_hive_engine_rpc_endpoint( $settings ) {
+		$settings = is_array( $settings ) ? $settings : array();
+		$endpoint = isset( $settings['hive_engine_rpc_endpoint'] )
+			? trim( (string) $settings['hive_engine_rpc_endpoint'] )
+			: self::HIVE_ENGINE_CONTRACTS_RPC;
+
+		if ( '' === $endpoint ) {
+			$endpoint = self::HIVE_ENGINE_CONTRACTS_RPC;
+		}
+
+		if ( function_exists( 'esc_url_raw' ) ) {
+			$endpoint = esc_url_raw( $endpoint );
+		}
+
+		$scheme = parse_url( $endpoint, PHP_URL_SCHEME );
+		if ( ! in_array( $scheme, array( 'https', 'http' ), true ) ) {
+			return new WP_Error( 'hive_engine_rpc_endpoint_invalid', 'Hive Engine RPC endpoint must be an HTTP or HTTPS URL.' );
+		}
+
+		return $endpoint;
 	}
 }

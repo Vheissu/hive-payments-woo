@@ -7,6 +7,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Hive_Payments_Assets {
 	const KIND_NATIVE      = 'native';
 	const KIND_HIVE_ENGINE = 'hive_engine';
+	const MAX_HIVE_ENGINE_SYMBOL_LENGTH = 32;
+	const MAX_HIVE_ENGINE_PRECISION     = 8;
 
 	public static function get_supported_assets( $settings ) {
 		$settings = is_array( $settings ) ? $settings : array();
@@ -102,17 +104,24 @@ class Hive_Payments_Assets {
 				continue;
 			}
 
-			$parts  = array_map( 'trim', explode( '|', $line ) );
-			$symbol = self::normalize_symbol( $parts[0] ?? '' );
-			$label  = self::normalize_label( $parts[1] ?? '' );
-			$rate   = self::normalize_manual_rate( $parts[2] ?? '' );
+			$parts      = array_map( 'trim', explode( '|', $line ) );
+			$raw_symbol = $parts[0] ?? '';
+			$symbol     = self::normalize_symbol( $raw_symbol );
+			$label      = self::normalize_label( $parts[1] ?? '' );
+			$rate       = self::normalize_manual_rate( $parts[2] ?? '' );
+			$precision  = self::normalize_precision( $parts[3] ?? '' );
+
+			if ( count( $parts ) > 4 ) {
+				$errors[] = sprintf( 'Hive Engine token "%s" has too many fields.', '' !== $symbol ? $symbol : $index + 1 );
+				continue;
+			}
 
 			if ( '' === $symbol ) {
 				$errors[] = sprintf( 'Hive Engine token line %d is missing a symbol.', $index + 1 );
 				continue;
 			}
 
-			if ( ! preg_match( '/^[A-Z0-9][A-Z0-9.-]*$/', $symbol ) ) {
+			if ( ! self::is_valid_hive_engine_symbol( $raw_symbol ) ) {
 				$errors[] = sprintf( 'Hive Engine token "%s" uses unsupported characters.', $symbol );
 				continue;
 			}
@@ -132,24 +141,33 @@ class Hive_Payments_Assets {
 				continue;
 			}
 
+			if ( ! $precision['valid'] ) {
+				$errors[] = sprintf( 'Hive Engine token "%s" has an invalid precision.', $symbol );
+				continue;
+			}
+
 			$token = array(
 				'symbol'      => $symbol,
 				'label'       => '' !== $label ? $label : $symbol,
 				'kind'        => self::KIND_HIVE_ENGINE,
 				'manual_rate' => $rate['float'],
+				'precision'   => $precision['int'],
 			);
 
 			$tokens[]         = $token;
 			$seen[ $symbol ]  = true;
 			$line_parts       = array( $symbol );
-			if ( '' !== $label || null !== $rate['float'] ) {
+			if ( '' !== $label || null !== $rate['float'] || null !== $precision['int'] ) {
 				$line_parts[] = $label;
 			}
-			if ( null !== $rate['float'] ) {
+			if ( null !== $rate['float'] || null !== $precision['int'] ) {
 				if ( 1 === count( $line_parts ) ) {
 					$line_parts[] = '';
 				}
 				$line_parts[] = $rate['normalized'];
+			}
+			if ( null !== $precision['int'] ) {
+				$line_parts[] = (string) $precision['int'];
 			}
 			$normalized_lines[] = implode( '|', $line_parts );
 		}
@@ -180,6 +198,19 @@ class Hive_Payments_Assets {
 	public static function is_native_symbol( $symbol ) {
 		$symbol = self::normalize_symbol( $symbol );
 		return in_array( $symbol, array( 'HIVE', 'HBD' ), true );
+	}
+
+	public static function is_valid_hive_engine_symbol( $symbol ) {
+		if ( ! is_scalar( $symbol ) ) {
+			return false;
+		}
+
+		$symbol = strtoupper( trim( (string) $symbol ) );
+		if ( '' === $symbol || strlen( $symbol ) > self::MAX_HIVE_ENGINE_SYMBOL_LENGTH ) {
+			return false;
+		}
+
+		return 1 === preg_match( '/^[A-Z0-9][A-Z0-9.-]*$/', $symbol );
 	}
 
 	private static function get_native_assets( $settings ) {
@@ -279,6 +310,43 @@ class Hive_Payments_Assets {
 			'valid'      => true,
 			'float'      => $float,
 			'normalized' => $normalized,
+		);
+	}
+
+	private static function normalize_precision( $value ) {
+		if ( ! is_scalar( $value ) ) {
+			return array(
+				'valid' => false,
+				'int'   => null,
+			);
+		}
+
+		$value = trim( (string) $value );
+		if ( '' === $value ) {
+			return array(
+				'valid' => true,
+				'int'   => null,
+			);
+		}
+
+		if ( ! preg_match( '/^\d+$/', $value ) ) {
+			return array(
+				'valid' => false,
+				'int'   => null,
+			);
+		}
+
+		$precision = (int) $value;
+		if ( $precision < 0 || $precision > self::MAX_HIVE_ENGINE_PRECISION ) {
+			return array(
+				'valid' => false,
+				'int'   => null,
+			);
+		}
+
+		return array(
+			'valid' => true,
+			'int'   => $precision,
 		);
 	}
 }

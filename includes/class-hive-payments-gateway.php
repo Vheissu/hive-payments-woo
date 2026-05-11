@@ -68,6 +68,13 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 				'default'     => 'https://api.hive.blog',
 				'desc_tip'    => true,
 			),
+			'hive_engine_rpc_endpoint' => array(
+				'title'       => __( 'Hive Engine RPC endpoint', 'hive-payments-woo' ),
+				'type'        => 'text',
+				'description' => __( 'Contracts RPC endpoint used for Hive Engine token metadata and market prices.', 'hive-payments-woo' ),
+				'default'     => Hive_Payments_Rates::HIVE_ENGINE_CONTRACTS_RPC,
+				'desc_tip'    => true,
+			),
 			'memo_prefix' => array(
 				'title'       => __( 'Memo prefix', 'hive-payments-woo' ),
 				'type'        => 'text',
@@ -99,7 +106,7 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 			'hive_engine_tokens' => array(
 				'title'       => __( 'Hive Engine tokens', 'hive-payments-woo' ),
 				'type'        => 'textarea',
-				'description' => __( 'Add one token per line as SYMBOL|Optional Label|Optional Manual Rate. Example: BEE|Hive Engine Token|0.25', 'hive-payments-woo' ),
+				'description' => __( 'Add one token per line as SYMBOL|Optional Label|Optional Manual Rate|Optional Precision. Example: BEE|Hive Engine Token|0.25|8', 'hive-payments-woo' ),
 				'default'     => '',
 				'desc_tip'    => true,
 			),
@@ -209,6 +216,14 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 		$value = array_map( 'strtoupper', $value );
 
 		return array_values( array_intersect( $value, array( 'HIVE', 'HBD' ) ) );
+	}
+
+	public function validate_rpc_endpoint_field( $key, $value ) {
+		return $this->sanitize_rpc_endpoint( $value, 'https://api.hive.blog' );
+	}
+
+	public function validate_hive_engine_rpc_endpoint_field( $key, $value ) {
+		return $this->sanitize_rpc_endpoint( $value, Hive_Payments_Rates::HIVE_ENGINE_CONTRACTS_RPC );
 	}
 
 	public function validate_hive_engine_tokens_field( $key, $value ) {
@@ -567,7 +582,7 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 			return 3;
 		}
 
-		return Hive_Payments_Rates::get_hive_engine_precision( $asset['symbol'] );
+		return Hive_Payments_Rates::get_hive_engine_precision( $asset['symbol'], $this->get_gateway_settings() );
 	}
 
 	private function format_amount( $amount, $precision = 3 ) {
@@ -847,5 +862,21 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 		if ( function_exists( 'add_settings_error' ) ) {
 			add_settings_error( $this->plugin_id . $this->id, esc_attr( sanitize_title( $message ) ), $message );
 		}
+	}
+
+	private function sanitize_rpc_endpoint( $value, $default ) {
+		$value = trim( (string) $value );
+		if ( '' === $value ) {
+			return $default;
+		}
+
+		$url = esc_url_raw( $value );
+		$scheme = parse_url( $url, PHP_URL_SCHEME );
+		if ( ! in_array( $scheme, array( 'https', 'http' ), true ) ) {
+			$this->add_settings_error( __( 'RPC endpoints must use http or https URLs.', 'hive-payments-woo' ) );
+			return $default;
+		}
+
+		return $url;
 	}
 }

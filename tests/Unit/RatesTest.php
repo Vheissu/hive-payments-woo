@@ -66,3 +66,39 @@ it( 'fetches hive engine live rates via market data', function () {
 
 	expect( $rate )->toBe( 0.2 );
 } );
+
+it( 'uses configured hive engine precision when token metadata is unavailable', function () {
+	Functions\when( 'sanitize_text_field' )->alias( function ( $value ) {
+		return $value;
+	} );
+	Functions\when( 'get_transient' )->justReturn( false );
+	Functions\when( 'wp_json_encode' )->alias( function ( $data ) {
+		return json_encode( $data );
+	} );
+	Functions\expect( 'wp_remote_post' )->once()->andReturn( new WP_Error( 'hive_engine_down', 'Hive Engine unavailable' ) );
+
+	$precision = Hive_Payments_Rates::get_hive_engine_precision(
+		'BEE',
+		array( 'hive_engine_tokens' => 'BEE|Bee Token|0.25|8' )
+	);
+
+	expect( $precision )->toBe( 8 );
+} );
+
+it( 'fetches and caches hive engine token precision from metadata', function () {
+	Functions\when( 'sanitize_text_field' )->alias( function ( $value ) {
+		return $value;
+	} );
+	Functions\when( 'get_transient' )->justReturn( false );
+	Functions\when( 'wp_json_encode' )->alias( function ( $data ) {
+		return json_encode( $data );
+	} );
+	Functions\expect( 'wp_remote_post' )->once()->andReturn( 'token_response' );
+	Functions\when( 'wp_remote_retrieve_response_code' )->justReturn( 200 );
+	Functions\when( 'wp_remote_retrieve_body' )->justReturn( json_encode( array( 'result' => array( 'symbol' => 'BEE', 'precision' => 4 ) ) ) );
+	Functions\when( 'set_transient' )->justReturn( true );
+
+	$precision = Hive_Payments_Rates::get_hive_engine_precision( 'BEE', array( 'hive_engine_tokens' => 'BEE|Bee Token|0.25|8' ) );
+
+	expect( $precision )->toBe( 4 );
+} );
