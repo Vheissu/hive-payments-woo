@@ -39,11 +39,14 @@ class Hive_Payments_Poller {
 
 	/**
 	 * Record where the account's history currently sits so the first poll only
-	 * looks at operations that arrive after activation. Without this the poller
+	 * looks at operations that arrive afterwards. Without a watermark the poller
 	 * starts at index -1 and walks up to 10,000 historical operations, matching
 	 * live orders against years of unrelated memos.
+	 *
+	 * Runs on activation and again whenever the gateway settings are saved,
+	 * because the receiving account is usually configured after activation.
 	 */
-	private static function seed_history_watermarks() {
+	public static function seed_history_watermarks() {
 		$settings = self::get_settings();
 		$account  = isset( $settings['hive_account'] ) ? sanitize_text_field( $settings['hive_account'] ) : '';
 		$account  = strtolower( ltrim( $account, '@' ) );
@@ -52,20 +55,39 @@ class Hive_Payments_Poller {
 			return;
 		}
 
-		if ( false === get_option( self::OPTION_LAST_INDEX, false ) ) {
-			$rpc     = Hive_Payments_RPC::from_settings( $settings );
-			$history = $rpc->get_account_history( $account, -1, 1 );
-			if ( ! is_wp_error( $history ) && ! empty( $history ) ) {
-				$latest = end( $history );
-				if ( is_array( $latest ) && isset( $latest[0] ) ) {
-					update_option( self::OPTION_LAST_INDEX, (int) $latest[0], false );
-				}
+		self::seed_native_watermark( $account, $settings );
+		self::seed_engine_watermark();
+	}
+
+	private static function seed_native_watermark( $account, $settings ) {
+		if ( false !== get_option( self::OPTION_LAST_INDEX, false ) ) {
+			return false;
+		}
+
+		$rpc     = Hive_Payments_RPC::from_settings( $settings );
+		$history = $rpc->get_account_history( $account, -1, 1, false );
+		$index   = 0;
+
+		if ( ! is_wp_error( $history ) && ! empty( $history ) ) {
+			$latest = end( $history );
+			if ( is_array( $latest ) && isset( $latest[0] ) ) {
+				$index = (int) $latest[0];
 			}
 		}
 
-		if ( false === get_option( self::OPTION_LAST_ENGINE, false ) ) {
-			update_option( self::OPTION_LAST_ENGINE, time(), false );
+		update_option( self::OPTION_LAST_INDEX, $index, false );
+
+		return true;
+	}
+
+	private static function seed_engine_watermark() {
+		if ( false !== get_option( self::OPTION_LAST_ENGINE, false ) ) {
+			return false;
 		}
+
+		update_option( self::OPTION_LAST_ENGINE, time(), false );
+
+		return true;
 	}
 
 	public static function deactivate() {
@@ -73,6 +95,7 @@ class Hive_Payments_Poller {
 	}
 
 	public function reschedule() {
+		self::seed_history_watermarks();
 		self::clear_schedule();
 		self::schedule();
 	}
@@ -139,6 +162,12 @@ class Hive_Payments_Poller {
 	 * Scan the store account's Hive account history for native HIVE/HBD transfers.
 	 */
 	private function poll_native( $account, $settings ) {
+		// Backstop for stores whose account was configured without the settings
+		// screen ever being saved: record the current position and start next run.
+		if ( self::seed_native_watermark( $account, $settings ) ) {
+			return;
+		}
+
 		$rpc               = Hive_Payments_RPC::from_settings( $settings );
 		$min_confirmations = isset( $settings['min_confirmations'] ) ? (int) $settings['min_confirmations'] : 0;
 		$head_blocks       = array();
@@ -207,6 +236,10 @@ class Hive_Payments_Poller {
 	 * custom_json that carries them is signed by the sender.
 	 */
 	private function poll_hive_engine( $account, $settings ) {
+		if ( self::seed_engine_watermark() ) {
+			return;
+		}
+
 		$client            = Hive_Payments_Engine_History::from_settings( $settings );
 		$min_confirmations = isset( $settings['min_confirmations'] ) ? (int) $settings['min_confirmations'] : 0;
 		$head_blocks       = array();
@@ -221,7 +254,7 @@ class Hive_Payments_Poller {
 		}
 
 		$watermark = (int) get_option( self::OPTION_LAST_ENGINE, 0 );
-		$cutoff    = $watermark > 0 ? $watermark - self::ENGINE_OVERLAP_SECONDS : 0;
+		$cutoff    = max( 0, $watermark - self::ENGINE_OVERLAP_SECONDS );
 		$newest    = $watermark;
 
 		for ( $page = 0; $page < self::ENGINE_MAX_PAGES; $page++ ) {
