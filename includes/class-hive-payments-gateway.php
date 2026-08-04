@@ -68,11 +68,32 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 				'default'     => 'https://api.hive.blog',
 				'desc_tip'    => true,
 			),
+			'rpc_fallback_endpoints' => array(
+				'title'       => __( 'Hive RPC fallback endpoints', 'hive-payments-woo' ),
+				'type'        => 'textarea',
+				'description' => __( 'Optional. One endpoint per line, tried in order if the primary node fails. Example: https://anyx.io', 'hive-payments-woo' ),
+				'default'     => '',
+				'desc_tip'    => true,
+			),
 			'hive_engine_rpc_endpoint' => array(
 				'title'       => __( 'Hive Engine RPC endpoint', 'hive-payments-woo' ),
 				'type'        => 'text',
 				'description' => __( 'Contracts RPC endpoint used for Hive Engine token metadata and market prices.', 'hive-payments-woo' ),
 				'default'     => Hive_Payments_Rates::HIVE_ENGINE_CONTRACTS_RPC,
+				'desc_tip'    => true,
+			),
+			'hive_engine_history_endpoint' => array(
+				'title'       => __( 'Hive Engine history endpoint', 'hive-payments-woo' ),
+				'type'        => 'text',
+				'description' => __( 'Account history API used to detect incoming Hive Engine token payments. Hive Engine transfers never appear in the receiving account\'s Hive history, so this endpoint is required for token payments to be detected.', 'hive-payments-woo' ),
+				'default'     => Hive_Payments_Engine_History::DEFAULT_HISTORY_ENDPOINT,
+				'desc_tip'    => true,
+			),
+			'hive_engine_blockchain_endpoint' => array(
+				'title'       => __( 'Hive Engine blockchain endpoint', 'hive-payments-woo' ),
+				'type'        => 'text',
+				'description' => __( 'Sidechain RPC endpoint used to measure Hive Engine confirmation depth.', 'hive-payments-woo' ),
+				'default'     => Hive_Payments_Engine_History::DEFAULT_BLOCKCHAIN_ENDPOINT,
 				'desc_tip'    => true,
 			),
 			'memo_prefix' => array(
@@ -219,11 +240,45 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 	}
 
 	public function validate_rpc_endpoint_field( $key, $value ) {
-		return $this->sanitize_rpc_endpoint( $value, 'https://api.hive.blog' );
+		return $this->sanitize_rpc_endpoint( $value, Hive_Payments_RPC::DEFAULT_ENDPOINT );
+	}
+
+	public function validate_rpc_fallback_endpoints_field( $key, $value ) {
+		$valid = array();
+
+		foreach ( Hive_Payments_RPC::split_endpoint_list( $value ) as $endpoint ) {
+			$url    = esc_url_raw( $endpoint );
+			$scheme = parse_url( $url, PHP_URL_SCHEME );
+
+			if ( ! in_array( $scheme, array( 'https', 'http' ), true ) ) {
+				$this->add_settings_error(
+					sprintf(
+						/* translators: %s is the rejected endpoint. */
+						__( 'Ignored Hive RPC fallback endpoint "%s": endpoints must be http or https URLs.', 'hive-payments-woo' ),
+						$endpoint
+					)
+				);
+				continue;
+			}
+
+			if ( ! in_array( $url, $valid, true ) ) {
+				$valid[] = $url;
+			}
+		}
+
+		return implode( "\n", $valid );
 	}
 
 	public function validate_hive_engine_rpc_endpoint_field( $key, $value ) {
 		return $this->sanitize_rpc_endpoint( $value, Hive_Payments_Rates::HIVE_ENGINE_CONTRACTS_RPC );
+	}
+
+	public function validate_hive_engine_history_endpoint_field( $key, $value ) {
+		return $this->sanitize_rpc_endpoint( $value, Hive_Payments_Engine_History::DEFAULT_HISTORY_ENDPOINT );
+	}
+
+	public function validate_hive_engine_blockchain_endpoint_field( $key, $value ) {
+		return $this->sanitize_rpc_endpoint( $value, Hive_Payments_Engine_History::DEFAULT_BLOCKCHAIN_ENDPOINT );
 	}
 
 	public function validate_hive_engine_tokens_field( $key, $value ) {

@@ -23,6 +23,7 @@ define( 'HIVE_PAYMENTS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
 require_once __DIR__ . '/includes/class-hive-payments-rpc.php';
 require_once __DIR__ . '/includes/class-hive-payments-assets.php';
+require_once __DIR__ . '/includes/class-hive-payments-engine-history.php';
 require_once __DIR__ . '/includes/class-hive-payments-request.php';
 require_once __DIR__ . '/includes/class-hive-payments-rates.php';
 require_once __DIR__ . '/includes/class-hive-payments-poller.php';

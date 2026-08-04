@@ -5,10 +5,17 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class Hive_Payments_Poller {
-	const ACTION_HOOK        = 'hive_payments_poll';
-	const OPTION_LAST_INDEX  = 'hive_payments_last_history_index';
-	const OPTION_LAST_SEEN   = 'hive_payments_last_poll';
-	const SCHEDULED_GROUP    = 'hive-payments';
+	const ACTION_HOOK          = 'hive_payments_poll';
+	const OPTION_LAST_INDEX    = 'hive_payments_last_history_index';
+	const OPTION_LAST_ENGINE   = 'hive_payments_last_engine_timestamp';
+	const OPTION_LAST_SEEN     = 'hive_payments_last_poll';
+	const OPTION_CLAIM_PREFIX  = 'hive_payments_claim_';
+	const SCHEDULED_GROUP      = 'hive-payments';
+
+	/** Re-scan this far behind the Hive Engine watermark to absorb clock skew. */
+	const ENGINE_OVERLAP_SECONDS = 900;
+	const ENGINE_PAGE_SIZE       = 100;
+	const ENGINE_MAX_PAGES       = 10;
 
 	private static $instance;
 
@@ -26,7 +33,39 @@ class Hive_Payments_Poller {
 	}
 
 	public static function activate() {
+		self::seed_history_watermarks();
 		self::schedule();
+	}
+
+	/**
+	 * Record where the account's history currently sits so the first poll only
+	 * looks at operations that arrive after activation. Without this the poller
+	 * starts at index -1 and walks up to 10,000 historical operations, matching
+	 * live orders against years of unrelated memos.
+	 */
+	private static function seed_history_watermarks() {
+		$settings = self::get_settings();
+		$account  = isset( $settings['hive_account'] ) ? sanitize_text_field( $settings['hive_account'] ) : '';
+		$account  = strtolower( ltrim( $account, '@' ) );
+
+		if ( '' === $account ) {
+			return;
+		}
+
+		if ( false === get_option( self::OPTION_LAST_INDEX, false ) ) {
+			$rpc     = Hive_Payments_RPC::from_settings( $settings );
+			$history = $rpc->get_account_history( $account, -1, 1 );
+			if ( ! is_wp_error( $history ) && ! empty( $history ) ) {
+				$latest = end( $history );
+				if ( is_array( $latest ) && isset( $latest[0] ) ) {
+					update_option( self::OPTION_LAST_INDEX, (int) $latest[0], false );
+				}
+			}
+		}
+
+		if ( false === get_option( self::OPTION_LAST_ENGINE, false ) ) {
+			update_option( self::OPTION_LAST_ENGINE, time(), false );
+		}
 	}
 
 	public static function deactivate() {
@@ -81,14 +120,28 @@ class Hive_Payments_Poller {
 			return;
 		}
 
-		$endpoint = isset( $settings['rpc_endpoint'] ) ? esc_url_raw( $settings['rpc_endpoint'] ) : '';
-		if ( empty( $endpoint ) ) {
-			return;
+		$kinds = self::get_configured_asset_kinds( $settings );
+
+		if ( in_array( Hive_Payments_Assets::KIND_NATIVE, $kinds, true ) ) {
+			$this->poll_native( $account, $settings );
 		}
 
-		$rpc = new Hive_Payments_RPC( $endpoint );
+		if ( in_array( Hive_Payments_Assets::KIND_HIVE_ENGINE, $kinds, true ) ) {
+			$this->poll_hive_engine( $account, $settings );
+		}
+
+		update_option( self::OPTION_LAST_SEEN, time(), false );
+
+		$this->recheck_recent_orders();
+	}
+
+	/**
+	 * Scan the store account's Hive account history for native HIVE/HBD transfers.
+	 */
+	private function poll_native( $account, $settings ) {
+		$rpc               = Hive_Payments_RPC::from_settings( $settings );
 		$min_confirmations = isset( $settings['min_confirmations'] ) ? (int) $settings['min_confirmations'] : 0;
-		$head_block        = 0;
+		$head_blocks       = array();
 
 		if ( $min_confirmations > 0 ) {
 			$properties = $rpc->get_dynamic_global_properties();
@@ -96,7 +149,7 @@ class Hive_Payments_Poller {
 				$this->log( 'Hive RPC dynamic properties error: ' . $properties->get_error_message() . ' ' . wp_json_encode( $properties->get_error_data() ) );
 				return;
 			}
-			$head_block = isset( $properties['head_block_number'] ) ? (int) $properties['head_block_number'] : 0;
+			$head_blocks[ Hive_Payments_Assets::KIND_NATIVE ] = isset( $properties['head_block_number'] ) ? (int) $properties['head_block_number'] : 0;
 		}
 
 		$last_index = (int) get_option( self::OPTION_LAST_INDEX, -1 );
@@ -104,10 +157,9 @@ class Hive_Payments_Poller {
 		$start      = -1;
 		$limit      = 1000;
 		$loops      = 0;
-		$min_seen   = null;
 
 		do {
-			$history = $rpc->get_account_history( $account, $start, $limit );
+			$history = $rpc->get_account_history( $account, $start, $limit, false );
 			if ( is_wp_error( $history ) ) {
 				$this->log( 'Hive RPC history error: ' . $history->get_error_message() . ' ' . wp_json_encode( $history->get_error_data() ) );
 				break;
@@ -116,6 +168,8 @@ class Hive_Payments_Poller {
 			if ( empty( $history ) ) {
 				break;
 			}
+
+			$min_seen = null;
 
 			foreach ( $history as $entry ) {
 				if ( ! is_array( $entry ) || count( $entry ) < 2 ) {
@@ -128,48 +182,132 @@ class Hive_Payments_Poller {
 				$max_seen = max( $max_seen, $index );
 				$min_seen = null === $min_seen ? $index : min( $min_seen, $index );
 
-				$op = $entry[1];
-				$candidates = self::extract_payment_candidates( $op );
-				foreach ( $candidates as $candidate ) {
-					if ( empty( $candidate['to'] ) || $account !== strtolower( $candidate['to'] ) ) {
-						continue;
-					}
-
-					if ( empty( $candidate['memo'] ) ) {
-						continue;
-					}
-
-					if ( ! self::candidate_has_confirmations( $candidate, $head_block, $min_confirmations ) ) {
-						continue;
-					}
-
-					$this->match_orders(
-						$candidate['memo'],
-						$candidate['amount'],
-						$candidate['asset'],
-						$candidate['trx_id'],
-						$candidate['kind'],
-						$candidate['amount_display'],
-						$candidate['payment_id'] ?? ''
-					);
+				foreach ( self::extract_payment_candidates( $entry[1] ) as $candidate ) {
+					$this->consider_candidate( $candidate, $account, $head_blocks, $min_confirmations );
 				}
 			}
 
 			$loops++;
-			if ( null === $min_seen ) {
+			if ( null === $min_seen || $min_seen <= ( $last_index + 1 ) ) {
 				break;
 			}
 
 			$start = $min_seen - 1;
-		} while ( $min_seen > ( $last_index + 1 ) && $loops < 10 );
+		} while ( $loops < 10 );
 
 		if ( $max_seen > $last_index ) {
 			update_option( self::OPTION_LAST_INDEX, $max_seen, false );
 		}
+	}
 
-		update_option( self::OPTION_LAST_SEEN, time(), false );
+	/**
+	 * Scan Hive Engine's own history for incoming token transfers.
+	 *
+	 * These never appear in the receiving account's Hive history, because the
+	 * custom_json that carries them is signed by the sender.
+	 */
+	private function poll_hive_engine( $account, $settings ) {
+		$client            = Hive_Payments_Engine_History::from_settings( $settings );
+		$min_confirmations = isset( $settings['min_confirmations'] ) ? (int) $settings['min_confirmations'] : 0;
+		$head_blocks       = array();
 
-		$this->recheck_recent_orders();
+		if ( $min_confirmations > 0 ) {
+			$head_block = $client->get_latest_block_number();
+			if ( is_wp_error( $head_block ) ) {
+				$this->log( 'Hive Engine blockchain error: ' . $head_block->get_error_message() . ' ' . wp_json_encode( $head_block->get_error_data() ) );
+				return;
+			}
+			$head_blocks[ Hive_Payments_Assets::KIND_HIVE_ENGINE ] = (int) $head_block;
+		}
+
+		$watermark = (int) get_option( self::OPTION_LAST_ENGINE, 0 );
+		$cutoff    = $watermark > 0 ? $watermark - self::ENGINE_OVERLAP_SECONDS : 0;
+		$newest    = $watermark;
+
+		for ( $page = 0; $page < self::ENGINE_MAX_PAGES; $page++ ) {
+			$entries = $client->get_transfer_history( $account, self::ENGINE_PAGE_SIZE, $page * self::ENGINE_PAGE_SIZE );
+			if ( is_wp_error( $entries ) ) {
+				$this->log( 'Hive Engine history error: ' . $entries->get_error_message() . ' ' . wp_json_encode( $entries->get_error_data() ) );
+				return;
+			}
+
+			if ( empty( $entries ) ) {
+				break;
+			}
+
+			$reached_cutoff = false;
+
+			foreach ( $entries as $entry ) {
+				$candidate = Hive_Payments_Engine_History::to_payment_candidate( $entry );
+				if ( null === $candidate ) {
+					continue;
+				}
+
+				$newest = max( $newest, (int) $candidate['timestamp'] );
+
+				// Entries come back newest first, so once we are behind the
+				// overlap window everything further back has been seen already.
+				if ( $cutoff > 0 && $candidate['timestamp'] < $cutoff ) {
+					$reached_cutoff = true;
+					continue;
+				}
+
+				$candidate['payment_id'] = self::build_candidate_payment_id( $candidate );
+				$this->consider_candidate( $candidate, $account, $head_blocks, $min_confirmations );
+			}
+
+			if ( $reached_cutoff || count( $entries ) < self::ENGINE_PAGE_SIZE ) {
+				break;
+			}
+		}
+
+		if ( $newest > 0 ) {
+			update_option( self::OPTION_LAST_ENGINE, $newest, false );
+		} elseif ( $watermark <= 0 ) {
+			update_option( self::OPTION_LAST_ENGINE, time(), false );
+		}
+	}
+
+	/**
+	 * Apply the shared destination/memo/confirmation gates before matching orders.
+	 */
+	private function consider_candidate( $candidate, $account, $head_blocks, $min_confirmations ) {
+		if ( empty( $candidate['to'] ) || strtolower( (string) $account ) !== strtolower( (string) $candidate['to'] ) ) {
+			return;
+		}
+
+		if ( empty( $candidate['memo'] ) ) {
+			return;
+		}
+
+		if ( ! self::candidate_has_confirmations( $candidate, $head_blocks, $min_confirmations ) ) {
+			return;
+		}
+
+		$this->match_orders(
+			$candidate['memo'],
+			$candidate['amount'],
+			$candidate['asset'],
+			$candidate['trx_id'],
+			$candidate['kind'],
+			$candidate['amount_display'],
+			$candidate['payment_id'] ?? ''
+		);
+	}
+
+	/**
+	 * Which asset kinds the store is actually configured to accept.
+	 */
+	private static function get_configured_asset_kinds( $settings ) {
+		$kinds = array();
+
+		foreach ( Hive_Payments_Assets::get_supported_assets( $settings ) as $asset ) {
+			if ( ! empty( $asset['kind'] ) && ! in_array( $asset['kind'], $kinds, true ) ) {
+				$kinds[] = $asset['kind'];
+			}
+		}
+
+		return $kinds;
 	}
 
 	private function recheck_recent_orders() {
@@ -226,12 +364,18 @@ class Hive_Payments_Poller {
 				'limit'          => 5,
 				'payment_method' => 'hive_payments',
 				'status'         => array( 'on-hold', 'pending' ),
-				'meta_key'       => '_hive_memo',
-				'meta_value'     => $memo,
+				'meta_query'     => array(
+					array(
+						'key'     => '_hive_memo',
+						'value'   => $memo,
+						'compare' => '=',
+					),
+				),
 			)
 		);
 
 		if ( empty( $orders ) ) {
+			$this->note_late_payment( $memo, $asset, $trx_id, $amount_display, $amount );
 			return;
 		}
 
@@ -269,6 +413,56 @@ class Hive_Payments_Poller {
 		}
 	}
 
+	/**
+	 * Flag a transfer that carries a valid memo but arrived after the order left
+	 * the payment window, so the merchant can refund rather than lose the customer.
+	 */
+	private function note_late_payment( $memo, $asset, $trx_id, $amount_display, $amount ) {
+		$orders = wc_get_orders(
+			array(
+				'limit'          => 1,
+				'payment_method' => 'hive_payments',
+				'status'         => array( 'cancelled', 'failed', 'refunded' ),
+				'meta_query'     => array(
+					array(
+						'key'     => '_hive_memo',
+						'value'   => $memo,
+						'compare' => '=',
+					),
+				),
+			)
+		);
+
+		if ( empty( $orders ) ) {
+			return;
+		}
+
+		$order = $orders[0];
+		if ( ! $order instanceof WC_Order ) {
+			return;
+		}
+
+		// Only note it once, however many times the transfer is re-scanned.
+		$recorded = (string) $order->get_meta( '_hive_late_payment_txid' );
+		if ( '' !== $recorded && $recorded === (string) $trx_id ) {
+			return;
+		}
+
+		$received = '' !== (string) $amount_display ? (string) $amount_display : (string) $amount;
+		$order->update_meta_data( '_hive_late_payment_txid', (string) $trx_id );
+		$order->save();
+		$order->add_order_note(
+			sprintf(
+				'Hive payment of %s %s arrived after this order was closed (transaction %s). It has not been credited and may need refunding.',
+				$received,
+				$asset,
+				$trx_id
+			)
+		);
+
+		$this->log( sprintf( 'Late Hive payment for memo %s: %s %s (%s)', $memo, $received, $asset, $trx_id ) );
+	}
+
 	public static function check_order_payment( WC_Order $order ) {
 		if ( ! $order || ! $order->get_id() ) {
 			return new WP_Error( 'hive_payments_invalid_order', 'Invalid order.' );
@@ -292,11 +486,6 @@ class Hive_Payments_Poller {
 			return new WP_Error( 'hive_payments_missing_account', 'Hive account is not configured.' );
 		}
 
-		$endpoint = isset( $settings['rpc_endpoint'] ) ? esc_url_raw( $settings['rpc_endpoint'] ) : '';
-		if ( empty( $endpoint ) ) {
-			return new WP_Error( 'hive_payments_missing_endpoint', 'Hive RPC endpoint is not configured.' );
-		}
-
 		$memo            = (string) $order->get_meta( '_hive_memo' );
 		$expected_asset  = (string) $order->get_meta( '_hive_asset' );
 		$expected_amount = (string) $order->get_meta( '_hive_amount' );
@@ -304,9 +493,57 @@ class Hive_Payments_Poller {
 			return new WP_Error( 'hive_payments_missing_meta', 'Hive payment details are missing on the order.' );
 		}
 
-		$rpc               = new Hive_Payments_RPC( $endpoint );
+		$expected_kind = self::get_order_asset_kind( $order );
+		$candidates    = Hive_Payments_Assets::KIND_HIVE_ENGINE === $expected_kind
+			? self::fetch_engine_candidates( $account, $settings )
+			: self::fetch_native_candidates( $account, $settings );
+
+		if ( is_wp_error( $candidates ) ) {
+			return $candidates;
+		}
+
 		$min_confirmations = isset( $settings['min_confirmations'] ) ? (int) $settings['min_confirmations'] : 0;
-		$head_block        = 0;
+
+		foreach ( $candidates['candidates'] as $candidate ) {
+			if ( ! self::candidate_matches_order( $candidate, $account, $memo, $expected_asset, $expected_amount, $expected_kind ) ) {
+				continue;
+			}
+
+			if ( ! self::candidate_has_confirmations( $candidate, $candidates['head_blocks'], $min_confirmations ) ) {
+				continue;
+			}
+
+			if ( self::payment_candidate_already_used( $candidate['payment_id'] ?? '', $order ) ) {
+				$order->add_order_note( 'Hive payment candidate was already used for another order.' );
+				return array( 'status' => 'pending' );
+			}
+
+			$paid = self::mark_order_paid( $order, $candidate['amount'], $candidate['asset'], $candidate['trx_id'], $candidate['amount_display'], $candidate['payment_id'] ?? '' );
+			if ( ! $paid ) {
+				return array( 'status' => 'pending' );
+			}
+
+			return array(
+				'status' => 'paid',
+				'txid'   => $candidate['trx_id'],
+				'amount' => $candidate['amount'],
+				'asset'  => $candidate['asset'],
+				'kind'   => $candidate['kind'],
+			);
+		}
+
+		return array( 'status' => 'pending' );
+	}
+
+	/**
+	 * Recent native HIVE/HBD candidates from the store account's Hive history.
+	 *
+	 * @return array|WP_Error
+	 */
+	private static function fetch_native_candidates( $account, $settings ) {
+		$rpc               = Hive_Payments_RPC::from_settings( $settings );
+		$min_confirmations = isset( $settings['min_confirmations'] ) ? (int) $settings['min_confirmations'] : 0;
+		$head_blocks       = array();
 
 		if ( $min_confirmations > 0 ) {
 			$properties = $rpc->get_dynamic_global_properties();
@@ -314,48 +551,72 @@ class Hive_Payments_Poller {
 				self::instance()->log( 'Hive RPC dynamic properties error: ' . $properties->get_error_message() . ' ' . wp_json_encode( $properties->get_error_data() ) );
 				return $properties;
 			}
-			$head_block = isset( $properties['head_block_number'] ) ? (int) $properties['head_block_number'] : 0;
+			$head_blocks[ Hive_Payments_Assets::KIND_NATIVE ] = isset( $properties['head_block_number'] ) ? (int) $properties['head_block_number'] : 0;
 		}
 
-		$history = $rpc->get_account_history( $account, -1, 200 );
+		$history = $rpc->get_account_history( $account, -1, 200, false );
 		if ( is_wp_error( $history ) ) {
 			self::instance()->log( 'Hive RPC history error: ' . $history->get_error_message() . ' ' . wp_json_encode( $history->get_error_data() ) );
 			return $history;
 		}
 
+		$candidates = array();
 		foreach ( $history as $entry ) {
 			if ( ! is_array( $entry ) || count( $entry ) < 2 ) {
 				continue;
 			}
-			$op = $entry[1];
-			$candidates = self::extract_payment_candidates( $op );
-			$expected_kind = self::get_order_asset_kind( $order );
-			foreach ( $candidates as $candidate ) {
-				if ( ! self::candidate_matches_order( $candidate, $account, $memo, $expected_asset, $expected_amount, $expected_kind ) ) {
-					continue;
-				}
 
-				if ( ! self::candidate_has_confirmations( $candidate, $head_block, $min_confirmations ) ) {
-					continue;
-				}
-
-				if ( self::payment_candidate_already_used( $candidate['payment_id'] ?? '', $order ) ) {
-					$order->add_order_note( 'Hive payment candidate was already used for another order.' );
-					return array( 'status' => 'pending' );
-				}
-
-				self::mark_order_paid( $order, $candidate['amount'], $candidate['asset'], $candidate['trx_id'], $candidate['amount_display'], $candidate['payment_id'] ?? '' );
-				return array(
-					'status' => 'paid',
-					'txid'   => $candidate['trx_id'],
-					'amount' => $candidate['amount'],
-					'asset'  => $candidate['asset'],
-					'kind'   => $candidate['kind'],
-				);
+			foreach ( self::extract_payment_candidates( $entry[1] ) as $candidate ) {
+				$candidates[] = $candidate;
 			}
 		}
 
-		return array( 'status' => 'pending' );
+		return array(
+			'candidates'  => $candidates,
+			'head_blocks' => $head_blocks,
+		);
+	}
+
+	/**
+	 * Recent Hive Engine token candidates from the Hive Engine history API.
+	 *
+	 * @return array|WP_Error
+	 */
+	private static function fetch_engine_candidates( $account, $settings ) {
+		$client            = Hive_Payments_Engine_History::from_settings( $settings );
+		$min_confirmations = isset( $settings['min_confirmations'] ) ? (int) $settings['min_confirmations'] : 0;
+		$head_blocks       = array();
+
+		if ( $min_confirmations > 0 ) {
+			$head_block = $client->get_latest_block_number();
+			if ( is_wp_error( $head_block ) ) {
+				self::instance()->log( 'Hive Engine blockchain error: ' . $head_block->get_error_message() . ' ' . wp_json_encode( $head_block->get_error_data() ) );
+				return $head_block;
+			}
+			$head_blocks[ Hive_Payments_Assets::KIND_HIVE_ENGINE ] = (int) $head_block;
+		}
+
+		$entries = $client->get_transfer_history( $account, self::ENGINE_PAGE_SIZE, 0 );
+		if ( is_wp_error( $entries ) ) {
+			self::instance()->log( 'Hive Engine history error: ' . $entries->get_error_message() . ' ' . wp_json_encode( $entries->get_error_data() ) );
+			return $entries;
+		}
+
+		$candidates = array();
+		foreach ( $entries as $entry ) {
+			$candidate = Hive_Payments_Engine_History::to_payment_candidate( $entry );
+			if ( null === $candidate ) {
+				continue;
+			}
+
+			$candidate['payment_id'] = self::build_candidate_payment_id( $candidate );
+			$candidates[]            = $candidate;
+		}
+
+		return array(
+			'candidates'  => $candidates,
+			'head_blocks' => $head_blocks,
+		);
 	}
 
 	private static function parse_amount( $amount_value ) {
@@ -548,8 +809,26 @@ class Hive_Payments_Poller {
 		);
 	}
 
-	private static function candidate_has_confirmations( $candidate, $head_block, $min_confirmations ) {
-		if ( $min_confirmations <= 0 || $head_block <= 0 ) {
+	/**
+	 * @param array     $candidate
+	 * @param int|array $head_blocks Head block number, or a map of asset kind => head block.
+	 * @param int       $min_confirmations
+	 */
+	private static function candidate_has_confirmations( $candidate, $head_blocks, $min_confirmations ) {
+		if ( $min_confirmations <= 0 ) {
+			return true;
+		}
+
+		// Hive Engine sidechain block numbers are unrelated to Hive block numbers,
+		// so a candidate may only ever be measured against its own chain's head.
+		if ( is_array( $head_blocks ) ) {
+			$kind       = isset( $candidate['kind'] ) ? (string) $candidate['kind'] : Hive_Payments_Assets::KIND_NATIVE;
+			$head_block = isset( $head_blocks[ $kind ] ) ? (int) $head_blocks[ $kind ] : 0;
+		} else {
+			$head_block = (int) $head_blocks;
+		}
+
+		if ( $head_block <= 0 ) {
 			return true;
 		}
 
@@ -688,8 +967,13 @@ class Hive_Payments_Poller {
 			array(
 				'limit'          => 5,
 				'payment_method' => 'hive_payments',
-				'meta_key'       => '_hive_payment_id',
-				'meta_value'     => $payment_id,
+				'meta_query'     => array(
+					array(
+						'key'     => '_hive_payment_id',
+						'value'   => $payment_id,
+						'compare' => '=',
+					),
+				),
 			)
 		);
 
@@ -710,7 +994,20 @@ class Hive_Payments_Poller {
 		return false;
 	}
 
+	/**
+	 * @return bool True when this call is the one that credited the order.
+	 */
 	private static function mark_order_paid( WC_Order $order, $amount, $asset, $trx_id, $amount_display = '', $payment_id = '' ) {
+		// payment_complete() re-fires order emails and status transitions, so it
+		// must never run twice for the same order.
+		if ( $order->has_status( array( 'processing', 'completed' ) ) ) {
+			return false;
+		}
+
+		if ( ! self::claim_payment_candidate( $payment_id, $order ) ) {
+			return false;
+		}
+
 		$paid_amount = '' !== $amount_display ? $amount_display : number_format( (float) $amount, 3, '.', '' );
 		$order->update_meta_data( '_hive_paid_amount', $paid_amount );
 		if ( '' !== $payment_id ) {
@@ -723,6 +1020,33 @@ class Hive_Payments_Poller {
 		$order->payment_complete( $trx_id );
 		$order->add_order_note( sprintf( 'Hive payment confirmed: %s %s', $paid_amount, $asset ) );
 		$order->save();
+
+		return true;
+	}
+
+	/**
+	 * Take an exclusive claim on a blockchain payment before crediting it.
+	 *
+	 * payment_candidate_already_used() reads committed order meta, which leaves a
+	 * window where a cron poll and a customer-triggered check can both decide a
+	 * transfer is unused. add_option() writes through a UNIQUE index on
+	 * option_name, so exactly one of them wins the race.
+	 */
+	private static function claim_payment_candidate( $payment_id, WC_Order $order ) {
+		$payment_id = trim( (string) $payment_id );
+		if ( '' === $payment_id || ! function_exists( 'add_option' ) ) {
+			return true;
+		}
+
+		$key      = self::OPTION_CLAIM_PREFIX . md5( $payment_id );
+		$order_id = (int) $order->get_id();
+
+		if ( add_option( $key, (string) $order_id, '', false ) ) {
+			return true;
+		}
+
+		// Already claimed: only proceed if this order is the claim holder.
+		return (int) get_option( $key, 0 ) === $order_id;
 	}
 
 	private static function expire_order_if_needed( WC_Order $order, $now = null ) {
