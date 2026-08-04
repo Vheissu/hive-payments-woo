@@ -291,12 +291,12 @@
 		}, 4000);
 	}
 
-	function scheduleNext() {
+	function scheduleNext(delayMs) {
 		if (!settings || !settings.shouldPoll || pollingStopped || attempts >= maxAttempts) {
 			return;
 		}
 
-		window.setTimeout(checkOrder, intervalMs);
+		window.setTimeout(checkOrder, delayMs || intervalMs);
 	}
 
 	function checkOrder() {
@@ -343,6 +343,14 @@
 
 				if (status === 'cancelled' || result.status === 'expired' || payload.data.expiredAt) {
 					markExpired();
+					return;
+				}
+
+				// The server skipped the blockchain lookup to protect its RPC
+				// node; this attempt told us nothing, so don't spend it.
+				if (result.status === 'throttled') {
+					attempts -= 1;
+					scheduleNext(5000);
 					return;
 				}
 

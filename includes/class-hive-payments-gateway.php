@@ -356,7 +356,11 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 
 		$order->update_status( 'on-hold', __( 'Awaiting Hive payment.', 'hive-payments-woo' ) );
 		wc_reduce_stock_levels( $order_id );
-		WC()->cart->empty_cart();
+
+		$cart = WC()->cart;
+		if ( $cart ) {
+			$cart->empty_cart();
+		}
 
 		return array(
 			'result'   => 'success',
@@ -479,39 +483,6 @@ class Hive_Payments_Gateway extends WC_Payment_Gateway {
 		echo '</div>';
 	}
 
-	public function add_order_action( $actions, $order = null ) {
-		if ( $order instanceof WC_Order && $order->get_payment_method() === $this->id ) {
-			$actions['hive_payments_check'] = __( 'Check Hive payment', 'hive-payments-woo' );
-		}
-		return $actions;
-	}
-
-	public function handle_order_action_check( $order ) {
-		if ( ! $order instanceof WC_Order ) {
-			return;
-		}
-		if ( $order->get_payment_method() !== $this->id ) {
-			return;
-		}
-
-		$result = Hive_Payments_Poller::check_order_payment( $order );
-		if ( is_wp_error( $result ) ) {
-			$order->add_order_note( 'Hive payment check failed: ' . $result->get_error_message() );
-			return;
-		}
-
-		if ( isset( $result['status'] ) && 'paid' === $result['status'] ) {
-			$order->add_order_note( __( 'Hive payment check: payment confirmed.', 'hive-payments-woo' ) );
-			return;
-		}
-
-		if ( isset( $result['status'] ) && 'expired' === $result['status'] ) {
-			$order->add_order_note( __( 'Hive payment check: payment window expired and the order was cancelled.', 'hive-payments-woo' ) );
-			return;
-		}
-
-		$order->add_order_note( __( 'Hive payment check: no matching transfer found yet.', 'hive-payments-woo' ) );
-	}
 	private function get_supported_assets() {
 		return Hive_Payments_Assets::get_supported_assets( $this->get_gateway_settings() );
 	}

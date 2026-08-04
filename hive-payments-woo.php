@@ -7,7 +7,7 @@
  * Text Domain: hive-payments-woo
  * Domain Path: /languages
  * Requires at least: 6.0
- * Requires PHP: 8.4
+ * Requires PHP: 8.2
  * WC requires at least: 10.4
  * WC tested up to: 10.4.3
  */
@@ -77,6 +77,18 @@ add_action( 'wp_ajax_nopriv_hive_payments_check_order', 'hive_payments_ajax_chec
 add_filter( 'woocommerce_order_actions', 'hive_payments_add_order_action', 10, 2 );
 add_action( 'woocommerce_order_action_hive_payments_check', 'hive_payments_handle_order_action_check' );
 
+/**
+ * Minimum gap between blockchain lookups for one order, in seconds.
+ */
+function hive_payments_check_throttle_seconds() {
+	/**
+	 * Filters the per-order throttle applied to customer-triggered payment checks.
+	 *
+	 * @param int $seconds Default 10.
+	 */
+	return max( 1, (int) apply_filters( 'hive_payments_check_throttle_seconds', 10 ) );
+}
+
 function hive_payments_ajax_check_order() {
 	if ( ! class_exists( 'WooCommerce' ) ) {
 		wp_send_json_error( array( 'message' => 'WooCommerce is not active.' ), 400 );
@@ -95,12 +107,28 @@ function hive_payments_ajax_check_order() {
 	}
 
 	$order = wc_get_order( $order_id );
-	if ( ! $order || $order->get_order_key() !== $order_key ) {
+	if ( ! $order || ! hash_equals( (string) $order->get_order_key(), $order_key ) ) {
 		wp_send_json_error( array( 'message' => 'Invalid order.' ), 404 );
 	}
 	if ( 'hive_payments' !== $order->get_payment_method() ) {
 		wp_send_json_error( array( 'message' => 'Invalid payment method.' ), 400 );
 	}
+
+	// Each check costs a blockchain history lookup, and the nonce needed to get
+	// here sits in the order page source for roughly a day. Without a throttle
+	// the endpoint is a convenient way to hammer the store's RPC node.
+	$throttle_key = 'hive_payments_check_' . $order_id;
+	if ( false !== get_transient( $throttle_key ) ) {
+		wp_send_json_success(
+			array(
+				'status'    => $order->get_status(),
+				'result'    => array( 'status' => 'throttled' ),
+				'expiresAt' => Hive_Payments_Request::get_order_expires_at( $order ),
+				'expiredAt' => (int) $order->get_meta( '_hive_expired_at' ),
+			)
+		);
+	}
+	set_transient( $throttle_key, 1, hive_payments_check_throttle_seconds() );
 
 	$result = Hive_Payments_Poller::check_order_payment( $order );
 	if ( is_wp_error( $result ) ) {

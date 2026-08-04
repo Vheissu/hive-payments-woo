@@ -17,7 +17,7 @@ Accept HIVE, HBD, or custom Hive Engine token payments using Hive. Payments are 
 - Admin-configurable confirmations, polling interval, and logging
 
 ## Requirements
-- PHP 8.4+
+- PHP 8.2+
 - WooCommerce 10.4+ (tested up to 10.4.3)
 - WordPress 6.x
 
