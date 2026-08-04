@@ -7,11 +7,14 @@ use Brain\Monkey\Functions;
 require_once __DIR__ . '/../../includes/class-hive-payments-assets.php';
 require_once __DIR__ . '/../../includes/class-hive-payments-poller.php';
 
-it( 'extracts hive engine token transfers from custom json operations', function () {
+it( 'ignores hive engine custom json in the hive account history', function () {
 	$reflect = new ReflectionClass( 'Hive_Payments_Poller' );
 	$method  = $reflect->getMethod( 'extract_payment_candidates' );
 	$method->setAccessible( true );
 
+	// This shape used to be parsed as a payment. It never actually reaches the
+	// receiving account's history, because the sender signs it, so treating it as
+	// a detection path only hid the fact that token payments were never found.
 	$candidates = $method->invoke(
 		null,
 		array(
@@ -21,8 +24,8 @@ it( 'extracts hive engine token transfers from custom json operations', function
 					'id'   => 'ssc-mainnet-hive',
 					'json' => json_encode(
 						array(
-							'contractName'   => 'tokens',
-							'contractAction' => 'transfer',
+							'contractName'    => 'tokens',
+							'contractAction'  => 'transfer',
 							'contractPayload' => array(
 								'symbol'   => 'BEE',
 								'to'       => 'merchant',
@@ -38,96 +41,57 @@ it( 'extracts hive engine token transfers from custom json operations', function
 		)
 	);
 
-	expect( $candidates )->toHaveCount( 1 );
-	expect( $candidates[0] )->toMatchArray(
+	expect( $candidates )->toBeArray()->toBeEmpty();
+} );
+
+it( 'extracts native transfers from both history formats', function () {
+	$reflect = new ReflectionClass( 'Hive_Payments_Poller' );
+	$method  = $reflect->getMethod( 'extract_payment_candidates' );
+	$method->setAccessible( true );
+
+	$modern = $method->invoke(
+		null,
 		array(
-			'asset'          => 'BEE',
-			'amount'         => 1.23456789,
-			'amount_display' => '1.23456789',
+			'op'     => array(
+				'type'  => 'transfer_operation',
+				'value' => array(
+					'to'     => 'Merchant',
+					'from'   => 'customer',
+					'memo'   => 'WC:100:abc',
+					'amount' => array( 'nai' => '@@000000021', 'amount' => '1500', 'precision' => 3 ),
+				),
+			),
+			'trx_id' => 'trx-123',
+			'block'  => 456,
+		)
+	);
+
+	expect( $modern )->toHaveCount( 1 );
+	expect( $modern[0] )->toMatchArray(
+		array(
+			'asset'          => 'HIVE',
+			'amount'         => 1.5,
+			'amount_display' => '1.500',
 			'memo'           => 'WC:100:abc',
 			'to'             => 'merchant',
 			'trx_id'         => 'trx-123',
 			'block'          => 456,
-			'kind'           => Hive_Payments_Assets::KIND_HIVE_ENGINE,
+			'kind'           => Hive_Payments_Assets::KIND_NATIVE,
 		)
 	);
-	expect( $candidates[0]['payment_id'] )->not->toBe( '' );
-} );
+	expect( $modern[0]['payment_id'] )->not->toBe( '' );
 
-it( 'ignores unsupported hive engine custom json actions', function () {
-	$reflect = new ReflectionClass( 'Hive_Payments_Poller' );
-	$method  = $reflect->getMethod( 'extract_payment_candidates' );
-	$method->setAccessible( true );
-
-	$candidates = $method->invoke(
+	$legacy = $method->invoke(
 		null,
 		array(
-			'op' => array(
-				'type'  => 'custom_json_operation',
-				'value' => array(
-					'id'   => 'ssc-mainnet-hive',
-					'json' => json_encode(
-						array(
-							'contractName'   => 'tokens',
-							'contractAction' => 'stake',
-							'contractPayload' => array(
-								'symbol'   => 'BEE',
-								'to'       => 'merchant',
-								'quantity' => '1.00000000',
-								'memo'     => 'WC:100:abc',
-							),
-						)
-					),
-				),
-			),
+			'op'     => array( 'transfer', array( 'to' => 'merchant', 'memo' => 'WC:1:x', 'amount' => '2.500 HBD' ) ),
+			'trx_id' => 'trx-9',
 		)
 	);
 
-	expect( $candidates )->toBeArray()->toBeEmpty();
-} );
-
-it( 'ignores hive engine transfers with invalid symbols or oversized quantities', function () {
-	$reflect = new ReflectionClass( 'Hive_Payments_Poller' );
-	$method  = $reflect->getMethod( 'extract_payment_candidates' );
-	$method->setAccessible( true );
-
-	$candidates = $method->invoke(
-		null,
-		array(
-			'op' => array(
-				'type'  => 'custom_json_operation',
-				'value' => array(
-					'id'   => 'ssc-mainnet-hive',
-					'json' => json_encode(
-						array(
-							array(
-								'contractName'   => 'tokens',
-								'contractAction' => 'transfer',
-								'contractPayload' => array(
-									'symbol'   => 'BAD TOKEN',
-									'to'       => 'merchant',
-									'quantity' => '1.00000000',
-									'memo'     => 'WC:100:abc',
-								),
-							),
-							array(
-								'contractName'   => 'tokens',
-								'contractAction' => 'transfer',
-								'contractPayload' => array(
-									'symbol'   => 'BEE',
-									'to'       => 'merchant',
-									'quantity' => str_repeat( '1', 65 ),
-									'memo'     => 'WC:100:abc',
-								),
-							),
-						)
-					),
-				),
-			),
-		)
-	);
-
-	expect( $candidates )->toBeArray()->toBeEmpty();
+	expect( $legacy )->toHaveCount( 1 );
+	expect( $legacy[0]['asset'] )->toBe( 'HBD' );
+	expect( $legacy[0]['amount_display'] )->toBe( '2.500' );
 } );
 
 it( 'matches hive engine candidates only when account memo asset and amount all line up', function () {

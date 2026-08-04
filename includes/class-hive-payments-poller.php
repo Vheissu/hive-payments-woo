@@ -351,7 +351,12 @@ class Hive_Payments_Poller {
 				'status'         => array( 'on-hold', 'pending' ),
 				'orderby'        => 'date',
 				'order'          => 'DESC',
-				'meta_key'       => '_hive_memo',
+				'meta_query'     => array(
+					array(
+						'key'     => '_hive_memo',
+						'compare' => 'EXISTS',
+					),
+				),
 			)
 		);
 
@@ -718,128 +723,39 @@ class Hive_Payments_Poller {
 		return null;
 	}
 
+	/**
+	 * Build native HIVE/HBD payment candidates from one Hive account history entry.
+	 *
+	 * Hive Engine token transfers are deliberately not handled here. They are
+	 * custom_json operations signed by the sender, so they never appear in the
+	 * receiving account's Hive history; parsing them from this stream produced no
+	 * matches and only made the missing detection path look covered. Token
+	 * candidates come from Hive_Payments_Engine_History instead.
+	 */
 	private static function extract_payment_candidates( $op ) {
-		$candidates = array();
-
-		$native_transfer = self::extract_transfer_op( $op );
-		if ( ! empty( $native_transfer ) ) {
-			$parsed = self::parse_amount( $native_transfer['amount'] ?? '' );
-			if ( ! empty( $parsed ) ) {
-				$candidate = array(
-					'asset'          => $parsed['asset'],
-					'amount'         => $parsed['amount'],
-					'amount_display' => $parsed['amount_display'] ?? '',
-					'memo'           => isset( $native_transfer['memo'] ) ? trim( (string) $native_transfer['memo'] ) : '',
-					'to'             => isset( $native_transfer['to'] ) ? strtolower( trim( (string) $native_transfer['to'] ) ) : '',
-					'block'          => isset( $op['block'] ) ? (int) $op['block'] : 0,
-					'trx_id'         => (string) ( $op['trx_id'] ?? '' ),
-					'kind'           => Hive_Payments_Assets::KIND_NATIVE,
-				);
-				$candidate['payment_id'] = self::build_candidate_payment_id( $candidate );
-				$candidates[] = $candidate;
-			}
-		}
-
-		$custom_json = self::extract_custom_json_op( $op );
-		if ( empty( $custom_json ) || empty( $custom_json['id'] ) || 'ssc-mainnet-hive' !== $custom_json['id'] ) {
-			return $candidates;
-		}
-
-		$payload = self::decode_custom_json_payload( $custom_json['json'] ?? '' );
-		if ( empty( $payload ) ) {
-			return $candidates;
-		}
-
-		$actions = isset( $payload[0] ) ? $payload : array( $payload );
-		foreach ( $actions as $action ) {
-			if ( ! is_array( $action ) ) {
-				continue;
-			}
-
-			$contract_name    = strtolower( (string) ( $action['contractName'] ?? '' ) );
-			$contract_action  = strtolower( (string) ( $action['contractAction'] ?? '' ) );
-			$contract_payload = $action['contractPayload'] ?? array();
-
-			if ( 'tokens' !== $contract_name || 'transfer' !== $contract_action || ! is_array( $contract_payload ) ) {
-				continue;
-			}
-
-			$amount = self::parse_hive_engine_quantity( $contract_payload['quantity'] ?? '' );
-			$asset  = strtoupper( trim( (string) ( $contract_payload['symbol'] ?? '' ) ) );
-			$to     = strtolower( trim( (string) ( $contract_payload['to'] ?? '' ) ) );
-			$memo   = trim( (string) ( $contract_payload['memo'] ?? '' ) );
-
-			if ( empty( $amount ) || ! Hive_Payments_Assets::is_valid_hive_engine_symbol( $asset ) || '' === $to ) {
-				continue;
-			}
-
-			$candidate = array(
-				'asset'          => $asset,
-				'amount'         => $amount['amount'],
-				'amount_display' => $amount['display'],
-				'memo'           => $memo,
-				'to'             => $to,
-				'block'          => isset( $op['block'] ) ? (int) $op['block'] : 0,
-				'trx_id'         => (string) ( $op['trx_id'] ?? '' ),
-				'kind'           => Hive_Payments_Assets::KIND_HIVE_ENGINE,
-			);
-			$candidate['payment_id'] = self::build_candidate_payment_id( $candidate );
-			$candidates[] = $candidate;
-		}
-
-		return $candidates;
-	}
-
-	private static function extract_custom_json_op( $op ) {
-		if ( empty( $op['op'] ) || ! is_array( $op['op'] ) ) {
-			return null;
-		}
-
-		if ( isset( $op['op'][0] ) ) {
-			$op_type = $op['op'][0] ?? '';
-			$op_data = $op['op'][1] ?? array();
-			if ( 'custom_json' === $op_type ) {
-				return $op_data;
-			}
-			return null;
-		}
-
-		$type  = $op['op']['type'] ?? '';
-		$value = $op['op']['value'] ?? array();
-		if ( 'custom_json_operation' === $type ) {
-			return $value;
-		}
-
-		return null;
-	}
-
-	private static function decode_custom_json_payload( $json ) {
-		if ( is_array( $json ) ) {
-			return $json;
-		}
-
-		if ( ! is_string( $json ) || '' === trim( $json ) ) {
+		$transfer = self::extract_transfer_op( $op );
+		if ( empty( $transfer ) ) {
 			return array();
 		}
 
-		$decoded = json_decode( $json, true );
-		return is_array( $decoded ) ? $decoded : array();
-	}
-
-	private static function parse_hive_engine_quantity( $quantity ) {
-		if ( ! is_string( $quantity ) ) {
-			return null;
+		$parsed = self::parse_amount( $transfer['amount'] ?? '' );
+		if ( empty( $parsed ) ) {
+			return array();
 		}
 
-		$quantity = trim( $quantity );
-		if ( strlen( $quantity ) > 64 || ! preg_match( '/^\d+(?:\.\d+)?$/', $quantity ) ) {
-			return null;
-		}
-
-		return array(
-			'amount'  => (float) $quantity,
-			'display' => $quantity,
+		$candidate = array(
+			'asset'          => $parsed['asset'],
+			'amount'         => $parsed['amount'],
+			'amount_display' => $parsed['amount_display'] ?? '',
+			'memo'           => isset( $transfer['memo'] ) ? trim( (string) $transfer['memo'] ) : '',
+			'to'             => isset( $transfer['to'] ) ? strtolower( trim( (string) $transfer['to'] ) ) : '',
+			'block'          => isset( $op['block'] ) ? (int) $op['block'] : 0,
+			'trx_id'         => (string) ( $op['trx_id'] ?? '' ),
+			'kind'           => Hive_Payments_Assets::KIND_NATIVE,
 		);
+		$candidate['payment_id'] = self::build_candidate_payment_id( $candidate );
+
+		return array( $candidate );
 	}
 
 	/**
