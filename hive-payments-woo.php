@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Hive Payments for WooCommerce
  * Description: Accept HIVE, HBD, and custom Hive Engine token payments via Hive with memo-based matching.
- * Version: 0.2.0
+ * Version: 0.3.0
  * Author: Dwayne Charrington <dwaynecharrington@gmail.com>
  * Text Domain: hive-payments-woo
  * Domain Path: /languages
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HIVE_PAYMENTS_VERSION', '0.2.0' );
+define( 'HIVE_PAYMENTS_VERSION', '0.3.0' );
 define( 'HIVE_PAYMENTS_PLUGIN_FILE', __FILE__ );
 define( 'HIVE_PAYMENTS_PLUGIN_PATH', __DIR__ );
 define( 'HIVE_PAYMENTS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
