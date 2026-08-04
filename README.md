@@ -8,6 +8,7 @@ Accept HIVE, HBD, or custom Hive Engine token payments using Hive. Payments are 
 - Strict memo matching (unique long token per order)
 - Live pricing via CoinGecko for native assets and Hive Engine market data for tokens
 - Manual rate fallback
+- Hive RPC endpoint failover
 - Structured payment instructions with copy actions
 - One-click `Pay now with Keychain` flow for native and Hive Engine payments
 - Native HIVE/HBD launch link for Hivesigner
@@ -34,7 +35,11 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 - **Memo random length**: Length of the random token (default 24). Longer reduces clashes.
 - **Accepted assets**: Choose HIVE and/or HBD.
 - **Hive Engine tokens**: Add one token per line as `SYMBOL|Optional Label|Optional Manual Rate|Optional Precision`.
+- **Hive RPC endpoint**: Node used to read the receiving account's Hive history.
+- **Hive RPC fallback endpoints**: Optional, one per line, tried in order when the primary node fails.
 - **Hive Engine RPC endpoint**: Contracts endpoint used for token metadata and market prices.
+- **Hive Engine history endpoint**: Account history API used to detect incoming token payments.
+- **Hive Engine blockchain endpoint**: Sidechain node used to measure token confirmation depth.
 - **Default asset**: Default choice at checkout.
 - **Rate source**: Live or Manual.
 - **CoinGecko API plan**: Default is **No API key**. Select Demo/Pro if you have a key.
@@ -56,9 +61,15 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 7. Manual copy/send remains available for any compatible wallet.
 8. Customer sends the exact amount to the configured account with **that memo**.
 9. If no matching payment arrives before the deadline, the order is automatically cancelled and stock is restored.
-10. Native HIVE/HBD payments are matched from Hive `transfer` operations.
-11. Hive Engine token payments are matched from `ssc-mainnet-hive` `tokens.transfer` custom JSON operations.
+10. Native HIVE/HBD payments are matched from Hive `transfer` operations in the receiving account's Hive history.
+11. Hive Engine token payments are matched from `tokens_transfer` operations in the Hive Engine history API.
 12. Poller detects the matching payment and marks the order paid.
+
+### Why two sources
+A Hive Engine transfer is a `custom_json` operation signed by the **sender**, so it only
+ever appears in the sender's Hive account history. Watching the receiving account's Hive
+history will never surface an incoming token payment, which is why token detection reads
+Hive Engine's own history API instead.
 
 ## Strict Memo Matching
 - Only payments with an **exact memo match** are accepted.
@@ -79,7 +90,7 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
   - Verify the receiving Hive account name.
   - Confirm the customer used the exact memo.
   - Confirm the payment arrived before the configured payment deadline.
-  - For Hive Engine tokens, confirm the customer used a Hive Engine compatible wallet and sent a `tokens.transfer`.
+  - For Hive Engine tokens, confirm the customer used a Hive Engine compatible wallet and sent a `tokens_transfer`, and that the Hive Engine history endpoint is reachable from your server.
   - Ensure polling is running (Action Scheduler or WP-Cron).
   - Check live pricing settings and cache interval.
 
@@ -95,10 +106,13 @@ Key settings (WooCommerce → Settings → Payments → Hive Payments):
 - Uses the WordPress HTTP API and sanitizes settings.
 - Orders remain **on-hold** until a matching transfer is confirmed.
 - High-precision token amounts are compared as decimal strings, not loose floats.
-- Confirmed payment candidates are stored so the same blockchain operation cannot be reused for another order.
+- Confirmed payment candidates are stored so the same blockchain operation cannot be reused for another order, and are claimed through a unique database key so concurrent checks cannot double-credit one transfer.
+- Customer-triggered payment checks are throttled per order to keep the endpoint from being used to hammer the store's RPC node.
 - Unpaid Hive orders are automatically cancelled after the configured payment window.
 - Amount and asset mismatches are recorded in order notes.
+- Transfers arriving after an order has been cancelled are flagged on that order for refund rather than silently kept.
 
 ## Roadmap Ideas
 - QR display for transfers
 - Additional rate providers
+- Estimated payment amount shown at checkout before the order is placed
