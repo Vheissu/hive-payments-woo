@@ -13,11 +13,15 @@ require __DIR__ . '/stubs/wp.php';
 
 use Brain\Monkey;
 
-uses()->beforeEach( function () {
-	Monkey\setUp();
-} );
-
-uses()->afterEach( function () {
-	Monkey\tearDown();
-	\Mockery::close();
-} );
+// The `->in()` scope is required: without it these hooks are never bound to the
+// test files, Brain Monkey is never reset, and function stubs leak across the
+// whole suite (a `when()` after an earlier `expect()` then blows up).
+uses()
+	->beforeEach( function () {
+		Monkey\setUp();
+	} )
+	->afterEach( function () {
+		Monkey\tearDown();
+		\Mockery::close();
+	} )
+	->in( 'Unit' );

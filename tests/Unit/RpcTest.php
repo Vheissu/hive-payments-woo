@@ -30,7 +30,8 @@ it( 'returns WP_Error on http error', function () {
 	Functions\when( 'wp_json_encode' )->alias( function ( $data ) {
 		return json_encode( $data );
 	} );
-	Functions\expect( 'wp_remote_post' )->once()->andReturn( 'response' );
+	// A failed account_history_api call falls back to condenser_api, so two posts.
+	Functions\expect( 'wp_remote_post' )->twice()->andReturn( 'response' );
 	Functions\when( 'wp_remote_retrieve_response_code' )->justReturn( 500 );
 	Functions\when( 'wp_remote_retrieve_body' )->justReturn( 'error' );
 

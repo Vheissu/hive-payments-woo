@@ -57,6 +57,9 @@ it( 'fetches hive engine live rates via market data', function () {
 		}
 		return json_encode( array() );
 	} );
+	Functions\when( 'esc_url_raw' )->alias( function ( $url ) {
+		return $url;
+	} );
 	Functions\when( 'wp_json_encode' )->alias( function ( $data ) {
 		return json_encode( $data );
 	} );
@@ -72,6 +75,9 @@ it( 'uses configured hive engine precision when token metadata is unavailable', 
 		return $value;
 	} );
 	Functions\when( 'get_transient' )->justReturn( false );
+	Functions\when( 'esc_url_raw' )->alias( function ( $url ) {
+		return $url;
+	} );
 	Functions\when( 'wp_json_encode' )->alias( function ( $data ) {
 		return json_encode( $data );
 	} );
@@ -90,6 +96,9 @@ it( 'fetches and caches hive engine token precision from metadata', function () 
 		return $value;
 	} );
 	Functions\when( 'get_transient' )->justReturn( false );
+	Functions\when( 'esc_url_raw' )->alias( function ( $url ) {
+		return $url;
+	} );
 	Functions\when( 'wp_json_encode' )->alias( function ( $data ) {
 		return json_encode( $data );
 	} );
